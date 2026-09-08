@@ -85,7 +85,7 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             try:
                 host = _valid_host(user_input[CONF_HOST])
             except vol.Invalid:
-                return self.async_show_form
+                return self.async_show_form(
                     step_id="user",
                     data_schema=_user_schema(),
                     errors={CONF_HOST: "invalid_host"},
@@ -95,7 +95,7 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             self._abort_if_unique_id_configured()
             return self.async_create_entry(
                 title=f"Coselig {host}",
-                data={CONF_HOST: host, CONF_PORT: port, CONF_TIMEOUT, user_input[CONF_TIMEOUT]},
+                data={CONF_HOST: host, CONF_PORT: port, CONF_TIMEOUT: user_input[CONF_TIMEOUT]},
                 options={
                     CONF_POLLING_ENABLED: user_input[CONF_POLLING_ENABLED],
                     CONF_POLL_INTERVAL: user_input[CONF_POLL_INTERVAL],
@@ -124,12 +124,12 @@ class CoseligOptionsFlow(config_entries.OptionsFlow):
                 vol.Required(CONF_POLLING_ENABLED, default=True): bool,
                 vol.Required(CONF_POLL_INTERVAL, default=DEFAULT_POLL_INTERVAL): vol.All(
                     vol.Coerce(float), vol.Range(min=0.5, max=3600.0)
-                  ),
+                ),
             }
-            )
+        )
         return self.async_show_form(
             step_id="init",
-             data_schema=self.add_suggested_values_to_schema(
+            data_schema=self.add_suggested_values_to_schema(
                 schema, self.config_entry.options
             ),
         )
