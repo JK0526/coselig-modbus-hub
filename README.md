@@ -5,11 +5,13 @@
 
 ## HACS 安裝
 
-1. 在 HACS → Integrations → ⋮ → Custom repositories，加入此 GitHub repository URL，類型選 `Integration`。
-2. 下載 `Coselig Modbus Hub` 後重新啟動 Home Assistant。
+1. 在 HACS → Integrations 搜尋並下載 `Coselig Modbus Hub`。若你的 HACS 尚未顯示此項目，再使用 Custom repositories，類型選 `Integration`。
+2. 重新啟動 Home Assistant。
 3. 到設定 → 裝置與服務 → 新增整合，搜尋 `Coselig Modbus Hub`。
 4. 輸入你的 TCP gateway 位址與連接埠，建立 Hub。
-5. 開啟左側 `Coselig Hub` 面板，逐一新增你的設備通道。
+5. 確認 Home Assistant 的 MQTT 整合已連線，再開啟左側 `Coselig Hub` 面板，逐一新增你的設備通道。
+
+若儲存通道失敗，面板會保留目前輸入並顯示後端錯誤；先依錯誤內容處理 MQTT 連線或通道欄位，再重新儲存。表單只有在儲存成功後才會清空。
 
 本專案不內建任何現場 IP、設備名稱或通道清單；每個安裝環境都必須自行輸入。若從其他系統切換，請先停用原本的輪詢與控制流程，避免同時寫入設備。
 
@@ -48,3 +50,4 @@ RTU 沒有 transaction ID。關閉舊 TCP 可隔離該連線資料，但無法�
 目前 queue 滿會明確拋出 QueueFull，不會默默捨棄已接受的控制。取消等待中的呼叫不保證撤回已送出的硬體寫入。
 
 前置資料及驗收規劃見 [開發決策](docs/development.md)。
+
