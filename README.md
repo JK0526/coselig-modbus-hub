@@ -1,4 +1,4 @@
-# Sunwave Modbus Hub
+# Coselig Modbus Hub
 
 目前已完成可載入的 Home Assistant custom integration、MQTT bridge 與 Hub 管理面板。
 目標：以 Home Assistant 整合與友善管理介面取代 Node-RED，保留 MQTT 燈控。
@@ -6,10 +6,10 @@
 ## HACS 安裝
 
 1. 在 HACS → Integrations → ⋮ → Custom repositories，加入此 GitHub repository URL，類型選 `Integration`。
-2. 下載 `Sunwave Modbus Hub` 後重新啟動 Home Assistant。
-3. 到設定 → 裝置與服務 → 新增整合，搜尋 `Sunwave Modbus Hub`。
+2. 下載 `Coselig Modbus Hub` 後重新啟動 Home Assistant。
+3. 到設定 → 裝置與服務 → 新增整合，搜尋 `Coselig Modbus Hub`。
 4. 輸入你的 TCP gateway 位址與連接埠，建立 Hub。
-5. 開啟左側 `Sunwave Hub` 面板，逐一新增你的設備通道。
+5. 開啟左側 `Coselig Hub` 面板，逐一新增你的設備通道。
 
 本專案不內建任何現場 IP、設備名稱或通道清單；每個安裝環境都必須自行輸入。若從其他系統切換，請先停用原本的輪詢與控制流程，避免同時寫入設備。
 
