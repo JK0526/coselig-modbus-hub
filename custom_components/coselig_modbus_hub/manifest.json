@@ -1,7 +1,7 @@
 {
   "domain": "coselig_modbus_hub",
   "name": "Coselig Modbus Hub",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "codeowners": [],
   "config_flow": true,
   "dependencies": ["mqtt"],
