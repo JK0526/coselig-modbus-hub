@@ -1,0 +1,10 @@
+{
+  "domain": "sunwave_modbus_hub",
+  "name": "Sunwave Modbus Hub",
+  "version": "0.2.0",
+  "codeowners": [],
+  "config_flow": true,
+  "dependencies": ["mqtt"],
+  "integration_type": "hub",
+  "iot_class": "local_push"
+}
