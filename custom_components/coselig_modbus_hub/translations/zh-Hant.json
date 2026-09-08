@@ -10,6 +10,9 @@
           "timeout": "回覆逾時（秒）",
           "polling_enabled": "啟用輪詢",
           "poll_interval": "輪詢間隔（秒）"
+        },
+        "error": {
+          "invalid_host": "請輸入有效的 IP 位址或主機名稱。"
         }
       }
     }
