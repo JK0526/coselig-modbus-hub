@@ -7,7 +7,7 @@
 
 ## 已完成（截至 2026-09-08）
 
-- 可獨立部署的 `custom_components/sunwave_modbus_hub` 骨架與 Config Flow／Options Flow。
+- 可獨立部署的 `custom_components/coselig_modbus_hub` 骨架與 Config Flow／Options Flow。
 - RTU over TCP 0x03／0x06、CRC、回覆配對、拆包、控制優先佇列與逾時重連。
 - 可自行建立的通道資料驗證，以及 MQTT Discovery／availability topic 產生器。
 - HA MQTT adapter：有通道設定時才啟動，發布 retained Discovery，並把控制 topic 路由到 runtime。
@@ -48,4 +48,4 @@
 - HA 整合結構：https://developers.home-assistant.io/docs/creating_integration_file_structure/
 - MQTT Light：https://www.home-assistant.io/integrations/light.mqtt/
 
-官方 Modbus 文件只支持標準功能碼行為，不證明 Sunwave 特有 register、高 byte 或色溫能力。
+官方 Modbus 文件只支持標準功能碼行為，不證明 Coselig 特有 register、高 byte 或色溫能力。
