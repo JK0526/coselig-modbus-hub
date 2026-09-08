@@ -1,3 +1,4 @@
+
 /* Coselig Hub management panel. It uses only Home Assistant's public panel API. */
 (function () {
   "use strict";
@@ -45,9 +46,26 @@
       try {
         await this._hass.callWS(message);
         await this._load(true);
+        return true;
       } catch (error) {
-        this._error = error.message || String(error);
-        this._render();
+        this._error = error && error.message ? error.message : String(error);
+        // Keep the current form in place so a failed save does not discard
+        // the values the user just entered.  The next periodic load will
+        // still refresh the panel when the form is not focused.
+        const main = this.querySelector("main");
+        if (main) {
+          let notice = this.querySelector("#coselig-error");
+          if (!notice) {
+            notice = document.createElement("p");
+            notice.id = "coselig-error";
+            notice.className = "offline";
+            main.appendChild(notice);
+          }
+          notice.textContent = this._error;
+        } else {
+          this._render();
+        }
+        return false;
       }
     }
 
@@ -102,12 +120,20 @@
       modelSelect.addEventListener("change", updateChannelChoices);
       updateChannelChoices();
       this.querySelector("#save-poll").addEventListener("click", () => this._call({ type:"coselig_modbus_hub/set_polling", entry_id:entry.entry_id, enabled:this.querySelector("#polling").checked, interval:Number(this.querySelector("#interval").value) }));
-      this.querySelector("#channel-form").addEventListener("submit", (event) => {
+      this.querySelector("#channel-form").addEventListener("submit", async (event) => {
         event.preventDefault();
+        const form = event.target;
+        const submit = form.querySelector("button[type=submit]");
+        if (submit) submit.disabled = true;
         const model = this.querySelector("#model").value;
         const channel = this.querySelector("#channel").value;
-        this._call({ type:"coselig_modbus_hub/save_channel", entry_id:entry.entry_id, channel:{ model, slave:Number(this.querySelector("#slave").value), channel, kind:(channel === "a" || channel === "b") ? "dual" : "single", name:this.querySelector("#name").value.trim(), minimum:Number(this.querySelector("#minimum").value), mired_min:Number(this.querySelector("#mired_min").value), mired_max:Number(this.querySelector("#mired_max").value) } });
-        event.target.reset();
+        const saved = await this._call({ type:"coselig_modbus_hub/save_channel", entry_id:entry.entry_id, channel:{ model, slave:Number(this.querySelector("#slave").value), channel, kind:(channel === "a" || channel === "b") ? "dual" : "single", name:this.querySelector("#name").value.trim(), minimum:Number(this.querySelector("#minimum").value), mired_min:Number(this.querySelector("#mired_min").value), mired_max:Number(this.querySelector("#mired_max").value) } });
+        if (saved) {
+          const refreshedForm = this.querySelector("#channel-form");
+          if (refreshedForm) refreshedForm.reset();
+        } else if (submit) {
+          submit.disabled = false;
+        }
       });
       this.querySelectorAll(".remove").forEach((button) => button.addEventListener("click", () => { if (window.confirm("刪除這個通道並清除其 Discovery 設定？")) this._call({ type:"coselig_modbus_hub/remove_channel", entry_id:entry.entry_id, slave:Number(button.dataset.slave), channel:button.dataset.channel }); }));
       this.querySelectorAll(".edit").forEach((button) => button.addEventListener("click", () => { const channel = entry.channels.find((item) => String(item.slave) === button.dataset.slave && item.channel === button.dataset.channel); if (!channel) return; ["model","slave","channel","name","minimum","mired_min","mired_max"].forEach((key) => { const field = this.querySelector(`#${key}`); if (field) field.value = channel[key]; }); window.scrollTo({ top: 0, behavior: "smooth" }); }));
