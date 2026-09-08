@@ -1,8 +1,8 @@
 import asyncio
 import unittest
-from sunwave.protocol import crc16, frame, read, write, validate, ProtocolError, DeviceException
-from sunwave.transport import Transport
-from sunwave.devices import Channel, validate_channels
+from coselig.protocol import crc16, frame, read, write, validate, ProtocolError, DeviceException
+from coselig.transport import Transport
+from coselig.devices import Channel, validate_channels
 
 
 class ProtocolTests(unittest.TestCase):
@@ -119,7 +119,7 @@ class TransportTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(all(isinstance(r,asyncio.CancelledError) for r in results))
 
     async def test_coalesced_frames(self):
-        from sunwave.protocol import receive
+        from coselig.protocol import receive
         reader=asyncio.StreamReader()
         a=write(51,2090,20); b=write(52,2090,30)
         reader.feed_data(a+b)

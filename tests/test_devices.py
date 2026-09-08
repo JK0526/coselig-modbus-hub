@@ -1,6 +1,6 @@
 import unittest
 
-from custom_components.sunwave_modbus_hub.devices import (
+from custom_components.coselig_modbus_hub.devices import (
     Channel,
     channel_from_mapping,
     validate_channels,
