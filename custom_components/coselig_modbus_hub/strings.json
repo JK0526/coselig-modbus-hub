@@ -1,0 +1,28 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "設定 Coselig Modbus Hub",
+        "description": "輸入 RTU over TCP 閘道器設定。",
+        "data": {
+          "host": "TCP 位址",
+          "port": "TCP 連接埠",
+          "timeout": "回覆逾時（秒）",
+          "polling_enabled": "啟用輪詢",
+          "poll_interval": "輪詢間隔（秒）"
+        }
+      }
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Coselig Modbus Hub 選項",
+        "data": {
+          "polling_enabled": "啟用輪詢",
+          "poll_interval": "輪詢間隔（秒）"
+        }
+      }
+    }
+  }
+}
