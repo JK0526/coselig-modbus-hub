@@ -1,10 +1,11 @@
 {
   "domain": "coselig_modbus_hub",
   "name": "Coselig Modbus Hub",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "codeowners": [],
   "config_flow": true,
   "dependencies": ["mqtt"],
   "integration_type": "hub",
   "iot_class": "local_push"
 }
+
