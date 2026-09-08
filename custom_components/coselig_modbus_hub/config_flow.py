@@ -46,6 +46,33 @@ def _valid_host(value: str) -> str:
     return value
 
 
+def _user_schema() -> vol.Schema:
+    """Return a frontend-serializable schema for the setup form.
+
+    Home Assistant serializes config-flow schemas before sending them to the
+    frontend.  A Python callable such as ``_valid_host`` cannot be serialized
+    by newer Home Assistant releases, so the detailed host check is performed
+    after the form data has been validated.
+    """
+    return vol.Schema(
+        {
+            vol.Required(CONF_HOST): vol.All(
+                vol.Coerce(str), vol.Length(min=1, max=253)
+            ),
+            vol.Required(CONF_PORT, default=DEFAULT_PORT): vol.All(
+                vol.Coerce(int), vol.Range(min=1, max=65535)
+            ),
+            vol.Required(CONF_TIMEOUT, default=DEFAULT_TIMEOUT): vol.All(
+                vol.Coerce(float), vol.Range(min=0.05, max=30.0)
+            ),
+            vol.Required(CONF_POLLING_ENABLED, default=True): bool,
+            vol.Required(CONF_POLL_INTERVAL, default=DEFAULT_POLL_INTERVAL): vol.All(
+                vol.Coerce(float), vol.Range(min=0.5, max=3600.0)
+            ),
+        }
+    )
+
+
 class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     """Handle setup of a Coselig TCP gateway."""
 
@@ -55,13 +82,20 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         """Create one gateway entry from the UI."""
         errors = {}
         if user_input is not None:
-            host = user_input[CONF_HOST]
+            try:
+                host = _valid_host(user_input[CONF_HOST])
+            except vol.Invalid:
+                return self.async_show_form
+                    step_id="user",
+                    data_schema=_user_schema(),
+                    errors={CONF_HOST: "invalid_host"},
+                )
             port = user_input[CONF_PORT]
             await self.async_set_unique_id(f"{host}:{port}")
             self._abort_if_unique_id_configured()
             return self.async_create_entry(
                 title=f"Coselig {host}",
-                data={CONF_HOST: host, CONF_PORT: port, CONF_TIMEOUT: user_input[CONF_TIMEOUT]},
+                data={CONF_HOST: host, CONF_PORT: port, CONF_TIMEOUT, user_input[CONF_TIMEOUT]},
                 options={
                     CONF_POLLING_ENABLED: user_input[CONF_POLLING_ENABLED],
                     CONF_POLL_INTERVAL: user_input[CONF_POLL_INTERVAL],
@@ -69,22 +103,7 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 },
             )
 
-        schema = vol.Schema(
-            {
-                vol.Required(CONF_HOST): _valid_host,
-                vol.Required(CONF_PORT, default=DEFAULT_PORT): vol.All(
-                    vol.Coerce(int), vol.Range(min=1, max=65535)
-                ),
-                vol.Required(CONF_TIMEOUT, default=DEFAULT_TIMEOUT): vol.All(
-                    vol.Coerce(float), vol.Range(min=0.05, max=30.0)
-                ),
-                vol.Required(CONF_POLLING_ENABLED, default=True): bool,
-                vol.Required(CONF_POLL_INTERVAL, default=DEFAULT_POLL_INTERVAL): vol.All(
-                    vol.Coerce(float), vol.Range(min=0.5, max=3600.0)
-                ),
-            }
-        )
-        return self.async_show_form(step_id="user", data_schema=schema, errors=errors)
+        return self.async_show_form(step_id="user", data_schema=_user_schema(), errors=errors)
 
     @staticmethod
     def async_get_options_flow(config_entry):
@@ -105,12 +124,12 @@ class CoseligOptionsFlow(config_entries.OptionsFlow):
                 vol.Required(CONF_POLLING_ENABLED, default=True): bool,
                 vol.Required(CONF_POLL_INTERVAL, default=DEFAULT_POLL_INTERVAL): vol.All(
                     vol.Coerce(float), vol.Range(min=0.5, max=3600.0)
-                ),
+                  ),
             }
-        )
+            )
         return self.async_show_form(
             step_id="init",
-            data_schema=self.add_suggested_values_to_schema(
+             data_schema=self.add_suggested_values_to_schema(
                 schema, self.config_entry.options
             ),
         )
