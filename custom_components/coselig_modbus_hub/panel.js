@@ -8,6 +8,12 @@
     .replace(/"/g, "&quot;").replace(/'/g, "&#039;");
 
   class CoseligModbusHubPanel extends HTMLElement {
+    constructor() {
+      super();
+      this._formDirty = false;
+      this._channelDraft = null;
+    }
+
     set hass(value) {
       this._hass = value;
       if (!this._ready) this._render();
@@ -29,12 +35,47 @@
       try {
         this._data = await this._hass.callWS({ type: "coselig_modbus_hub/list" });
         this._error = null;
-        const formFocused = this.querySelector("#channel-form") && this.querySelector("#channel-form").contains(document.activeElement);
-        if (force || !formFocused) this._render();
+        const form = this.querySelector("#channel-form");
+        const formFocused = form && form.contains(this._deepActiveElement());
+        // Do not replace the form while the user is editing it.  The dirty
+        // flag also covers browsers where activeElement stops at a shadow host.
+        if (force || (!formFocused && !this._formDirty)) this._render();
       } catch (error) {
         this._error = error.message || String(error);
         this._render();
       }
+    }
+
+    _deepActiveElement() {
+      let active = document.activeElement;
+      while (active && active.shadowRoot && active.shadowRoot.activeElement) {
+        active = active.shadowRoot.activeElement;
+      }
+      return active;
+    }
+
+    _readChannelDraft() {
+      const ids = ["model", "slave", "channel", "name", "minimum", "mired_min", "mired_max"];
+      const draft = {};
+      ids.forEach((id) => {
+        const field = this.querySelector(`#${id}`);
+        if (field) draft[id] = field.value;
+      });
+      return draft;
+    }
+
+    _restoreChannelDraft() {
+      if (!this._channelDraft) return;
+      const draft = this._channelDraft;
+      const model = this.querySelector("#model");
+      if (model && draft.model) {
+        model.value = draft.model;
+        model.dispatchEvent(new Event("change", { bubbles: true }));
+      }
+      ["slave", "channel", "name", "minimum", "mired_min", "mired_max"].forEach((id) => {
+        const field = this.querySelector(`#${id}`);
+        if (field && draft[id] !== undefined) field.value = draft[id];
+      });
     }
 
     _selected() {
@@ -70,6 +111,9 @@
     }
 
     _render() {
+      if (this._formDirty && this.querySelector("#channel-form")) {
+        this._channelDraft = this._readChannelDraft();
+      }
       const entry = this._selected();
       const entries = (this._data && this._data.entries) || [];
       const state = entry && entry.state ? entry.state : {};
@@ -104,11 +148,24 @@
           </main>` : `<section class="form"><h2>尚未設定 Hub</h2><p>請先在 Home Assistant 的「設定 → 裝置與服務」加入 Coselig Modbus Hub。</p></section></main>`}
       `;
       this._bind(entry);
+      this._restoreChannelDraft();
     }
 
     _bind(entry) {
       if (!entry) return;
-      this.querySelector("#hub").addEventListener("change", (event) => { this._selectedId = event.target.value; this._render(); });
+      this.querySelector("#hub").addEventListener("change", (event) => {
+        this._selectedId = event.target.value;
+        this._formDirty = false;
+        this._channelDraft = null;
+        this._render();
+      });
+      const channelForm = this.querySelector("#channel-form");
+      const markFormDirty = () => {
+        this._formDirty = true;
+        this._channelDraft = this._readChannelDraft();
+      };
+      channelForm.addEventListener("input", markFormDirty);
+      channelForm.addEventListener("change", markFormDirty);
       const channelSelect = this.querySelector("#channel");
       const modelSelect = this.querySelector("#model");
       const updateChannelChoices = () => {
@@ -129,6 +186,8 @@
         const channel = this.querySelector("#channel").value;
         const saved = await this._call({ type:"coselig_modbus_hub/save_channel", entry_id:entry.entry_id, channel:{ model, slave:Number(this.querySelector("#slave").value), channel, kind:(channel === "a" || channel === "b") ? "dual" : "single", name:this.querySelector("#name").value.trim(), minimum:Number(this.querySelector("#minimum").value), mired_min:Number(this.querySelector("#mired_min").value), mired_max:Number(this.querySelector("#mired_max").value) } });
         if (saved) {
+          this._formDirty = false;
+          this._channelDraft = null;
           const refreshedForm = this.querySelector("#channel-form");
           if (refreshedForm) refreshedForm.reset();
         } else if (submit) {
@@ -136,7 +195,7 @@
         }
       });
       this.querySelectorAll(".remove").forEach((button) => button.addEventListener("click", () => { if (window.confirm("刪除這個通道並清除其 Discovery 設定？")) this._call({ type:"coselig_modbus_hub/remove_channel", entry_id:entry.entry_id, slave:Number(button.dataset.slave), channel:button.dataset.channel }); }));
-      this.querySelectorAll(".edit").forEach((button) => button.addEventListener("click", () => { const channel = entry.channels.find((item) => String(item.slave) === button.dataset.slave && item.channel === button.dataset.channel); if (!channel) return; ["model","slave","channel","name","minimum","mired_min","mired_max"].forEach((key) => { const field = this.querySelector(`#${key}`); if (field) field.value = channel[key]; }); window.scrollTo({ top: 0, behavior: "smooth" }); }));
+      this.querySelectorAll(".edit").forEach((button) => button.addEventListener("click", () => { const channel = entry.channels.find((item) => String(item.slave) === button.dataset.slave && item.channel === button.dataset.channel); if (!channel) return; ["model","slave","channel","name","minimum","mired_min","mired_max"].forEach((key) => { const field = this.querySelector(`#${key}`); if (field) field.value = channel[key]; }); this._formDirty = true; this._channelDraft = this._readChannelDraft(); window.scrollTo({ top: 0, behavior: "smooth" }); }));
     }
   }
   customElements.define("coselig-modbus-hub-panel", CoseligModbusHubPanel);
