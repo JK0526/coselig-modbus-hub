@@ -10,6 +10,10 @@ class ProtocolError(ValueError):
     """A malformed or mismatched Modbus response."""
 
 
+class CRCError(ProtocolError):
+    """A response with an invalid checksum."""
+
+
 class DeviceException(ProtocolError):
     """A valid Modbus exception response."""
 
@@ -40,14 +44,20 @@ def read(slave: int, count: int) -> bytes:
 def write(slave: int, register: int, value: int) -> bytes:
     if type(slave) is not int or not 1 <= slave <= 247:
         raise ValueError("Invalid slave")
-    if register not in range(0x082A, 0x082E) or type(value) is not int or not 0 <= value <= 100:
+    if (
+        register not in range(0x082A, 0x082E)
+        or type(value) is not int
+        or not 0 <= value <= 100
+    ):
         raise ValueError("Invalid register or value")
     return frame(struct.pack(">BBHBB", slave, 6, register, 5, value))
 
 
 def validate(request: bytes, response: bytes) -> bytes:
-    if len(response) < 5 or frame(response[:-2]) != response:
-        raise ProtocolError("Invalid CRC or length")
+    if len(response) < 5:
+        raise ProtocolError("Invalid length")
+    if frame(response[:-2]) != response:
+        raise CRCError("Invalid CRC")
     if response[0] != request[0]:
         raise ProtocolError("Wrong slave")
     if response[1] == request[1] | 0x80 and len(response) == 5:

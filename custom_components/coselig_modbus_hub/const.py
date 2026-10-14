@@ -1,13 +1,15 @@
-"""Constants for the Coselig Modbus Hub integration."""
+"""Fixed protocol defaults; only user-facing settings are persisted."""
 
 DOMAIN = "coselig_modbus_hub"
-CONF_HOST = "host"
-CONF_PORT = "port"
-CONF_TIMEOUT = "timeout"
-CONF_POLLING_ENABLED = "polling_enabled"
-CONF_POLL_INTERVAL = "poll_interval"
-CONF_CHANNELS = "channels"
+VERSION = "1.0.0"
 DEFAULT_PORT = 502
 DEFAULT_TIMEOUT = 0.5
-DEFAULT_POLL_INTERVAL = 3.0
-PLATFORMS = ("light",)
+DEFAULT_POLL_INTERVAL = 2.0
+DEFAULT_SCAN_START = 1
+DEFAULT_SCAN_END = 32
+CONTROL_CAPACITY = 32
+REGISTER_BASE = 0x082A
+MINIMUM_BRIGHTNESS = 2
+MIRED_MIN = 175
+MIRED_MAX = 455
+BACKOFF = (1, 2, 4, 8, 15, 30)
