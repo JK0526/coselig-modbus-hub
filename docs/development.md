@@ -1,4 +1,4 @@
-# v1.1 開發架構與驗證依據
+# v1.2 開發架構與驗證依據
 
 更新：2026-10-14。v1.0 取代 v0.2.x 的 MQTT／Panel／Channel 架構；歷史問題盤點保留於 `docs/specs/`，不作新版開發規範。
 
@@ -37,13 +37,13 @@ TCP 連線錯誤與 Slave transaction timeout 分開分類。`TimeoutError` 繼�
 
 ## Registry lifecycle
 
-每 Slave 一個 HA Device，identifier 包含 Entry ID／Slave；不建立 Gateway Device。所有 native light 設定 `has_entity_name=True`。
+每 Slave 一個 Parent HA Device，identifier 包含 Entry ID／Slave；每個有效輸出使用原生 Child Device，identifier 維持 entity unique_id，並以 Parent 的真實 `DeviceEntry.id` 建立 `parent_device_id`。不建立 Gateway Device，也不使用 `via_device_id` 表示邏輯輸出。所有 native light 設定 `has_entity_name=True`。
 
 setup 時依最新 profiles 列出有效 unique_id，只刪除同 Entry／本 integration 不再使用的輸出。存續 entity registry 項目完全不更新 user name。移除 Device 僅使用 HA 2026.10 的 `async_remove_device` API。
 
 Options profiles 使用 `OptionsFlowWithReload`；polling step 設 `automatic_reload=False` 並直接更新 runtime／喚醒 scheduler，無 options update listener。Reconfigure 使用 `async_update_reload_and_abort`。無手動 options update listener／第二次 reload。新 Host 先通過 TCP，才修改 Entry，Entry ID 與 registry 身份保持不變。
 
-HA unload 先確認平台卸載成功，再停止 Hub；失敗保留 runtime。關機事件同樣停止 Coordinator／worker 與 socket。掃描流由 native progress task 取消生命週期與 `async_remove()` 釋放資源。
+HA unload 先確認平台卸載成功，再停止 Hub；失敗保留 runtime。關機事件同樣停止 Coordinator／worker 與 socket。掃描流由 native progress task 取消生命週期與 `async_remove()` 釋放資源。v1.1.2 的 Parent 與 entity unique_id 原地保留；v1.2.0 由 LightEntity forwarding 建立 Child，HA entity registry 會保留 entity_id、名稱與 Area。
 
 ## 測試與可重現環境
 
@@ -63,6 +63,7 @@ CI 使用 `pytest --cov-branch`，整體最低 99%；`config_flow.py` 行與分�
 - [Config Entry runtime_data](https://developers.home-assistant.io/docs/core/integration-quality-scale/rules/runtime-data/)
 - [Native Light／Kelvin API](https://developers.home-assistant.io/docs/core/entity/light/)
 - [Entity Registry](https://developers.home-assistant.io/docs/entity_registry_index/)
+- [Device registry child devices](https://developers.home-assistant.io/docs/device_registry_index/)
 - [Diagnostics](https://developers.home-assistant.io/docs/core/integration/diagnostics/)
 - [HACS integration repository](https://www.hacs.xyz/docs/publish/integration/)
 
@@ -74,7 +75,7 @@ TCP 成功後先顯示範圍，首次1～247；按開始搜尋才建立progress 
 
 Polling=0 只讓背景scheduler等待Event，既有狀態／failure保留，寫入與scan不受停輪詢影響。0→非零立即喚醒、讀取真實狀態。起動時仍有單次bootstrap read；paused reconnect不發FC03，只恢復已確認且failure<3的可用性。
 
-20輪時間deque只量測bus round，不含lock等待／下一輪sleep；不自動調interval或降頻Slave。原生Entity Registry的area_id完全由HA與使用者管理，不加入area欄位或多個Device。
+20輪時間deque只量測bus round，不含lock等待／下一輪sleep；不自動調interval或降頻Slave。原生 Entity／Child Device Registry 的 area_id 完全由 HA 與使用者管理，不加入 area 欄位或 mapping table。
 
 Monitor訂閱每0.5秒讀取ring快照，只在變更時推送；無Modbus I/O。訂閱取消／WS斷線清timer。UI paused只凍結顯示，最新快照仍有200筆上限。所有WS命令要求admin，只提供list／subscribe／clear，沒有任何register或設定寫入。Trace例外隔離；完整RX記錄在原CRC驗證前，結果之後另記OK／ERROR及latency。前端以HA theme CSS variables 對 TX／RX／OK／TIMEOUT／CRC ERROR／ERROR 分色，未改 protocol 或 WebSocket schema。
 

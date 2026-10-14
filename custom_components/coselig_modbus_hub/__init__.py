@@ -11,9 +11,23 @@ from homeassistant.helpers import entity_registry as er
 
 from .const import DEFAULT_POLL_INTERVAL, DOMAIN
 from .hub import Hub
-from .models import devices_from_options
+from .models import Device, devices_from_options
 
 type CoseligConfigEntry = ConfigEntry[Hub]
+
+
+def ensure_parent_device(
+    hass: HomeAssistant, entry: CoseligConfigEntry, device: Device
+) -> dr.DeviceEntry:
+    """Create or retrieve the stable physical Slave parent device."""
+    registry = dr.async_get(hass)
+    return registry.async_get_or_create(
+        config_entry_id=entry.entry_id,
+        identifiers={(DOMAIN, f"{entry.entry_id}_slave_{device.slave}")},
+        name=f"Coselig {device.model.value.upper()} #{device.slave:02d}",
+        manufacturer="Coselig",
+        model=device.model.value.upper(),
+    )
 
 
 async def async_setup(hass: HomeAssistant, config: dict) -> bool:
@@ -40,9 +54,20 @@ def prune_registries(hass: HomeAssistant, entry: CoseligConfigEntry) -> None:
     identifiers = {
         (DOMAIN, f"{entry.entry_id}_slave_{device.slave}") for device in devices
     }
-    for device in dr.async_entries_for_config_entry(registry, entry.entry_id):
-        if not device.identifiers & identifiers:
+    expected_identifiers = identifiers | {
+        (DOMAIN, output.unique_id(entry.entry_id, device.slave))
+        for device in devices
+        for output in device.outputs
+    }
+    registry_devices = [
+        *dr.async_entries_for_config_entry(registry, entry.entry_id),
+        *dr.async_child_entries_for_config_entry(registry, entry.entry_id),
+    ]
+    for device in registry_devices:
+        if not device.identifiers & expected_identifiers:
             registry.async_remove_device(device.id)
+    for device in devices:
+        ensure_parent_device(hass, entry, device)
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: CoseligConfigEntry) -> bool:

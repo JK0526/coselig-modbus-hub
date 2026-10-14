@@ -17,7 +17,8 @@ async def lights(hass, gateway):
     coordinator = Coordinator(hass, transport, (device,), 2)
     await coordinator.async_poll_round()
     entities = [
-        CoseligLight(coordinator, "entry", device, output) for output in device.outputs
+        CoseligLight(coordinator, "entry", device, output, "parent")
+        for output in device.outputs
     ]
     for entity in entities:
         entity.hass = hass
@@ -103,9 +104,13 @@ async def test_single_and_entity_metadata(lights):
     assert light.name == "CH3"
     assert light.unique_id == "entry_slave_1_ch3"
     assert light.has_entity_name
-    assert light.device_info["manufacturer"] == "Coselig"
-    assert light.device_info["model"] == "P404"
-    assert light.device_info["identifiers"] == {("coselig_modbus_hub", "entry_slave_1")}
+    assert light.device_info["name"] == "CH3"
+    assert light.device_info["identifiers"] == {
+        ("coselig_modbus_hub", "entry_slave_1_ch3")
+    }
+    assert light.device_info["parent_device_id"] == "parent"
+    assert "manufacturer" not in light.device_info
+    assert "model" not in light.device_info
     await light.async_turn_on(brightness=255, color_temp_kelvin=4000)
     assert light.brightness == 255
     await light.async_turn_off()
@@ -172,7 +177,7 @@ async def test_p210_cct_uses_two_register_shared_conversion(gateway, hass):
     transport = Transport("127.0.0.1", gateway.port, timeout=0.04)
     coordinator = Coordinator(hass, transport, (device,), 2)
     await coordinator.async_poll_round()
-    light = CoseligLight(coordinator, "entry", device, device.outputs[0])
+    light = CoseligLight(coordinator, "entry", device, device.outputs[0], "parent")
     light.hass = hass
     light.async_write_ha_state = Mock()
     try:

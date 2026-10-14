@@ -13,11 +13,11 @@ from homeassistant.components.light import (
 )
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import HomeAssistantError
-from homeassistant.helpers.device_registry import DeviceInfo
+from homeassistant.helpers.device_registry import ChildDeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from . import CoseligConfigEntry
+from . import CoseligConfigEntry, ensure_parent_device
 from .const import DOMAIN, MIRED_MAX, MIRED_MIN, REGISTER_BASE
 from .coordinator import Coordinator
 from .models import (
@@ -37,28 +37,41 @@ async def async_setup_entry(
     async_add_entities: AddEntitiesCallback,
 ) -> None:
     coordinator = entry.runtime_data.coordinator
-    async_add_entities(
-        CoseligLight(coordinator, entry.entry_id, device, output)
-        for device in coordinator.devices
-        for output in device.outputs
-    )
+    entities = []
+    for device in coordinator.devices:
+        parent = ensure_parent_device(hass, entry, device)
+        entities.extend(
+            CoseligLight(
+                coordinator,
+                entry.entry_id,
+                device,
+                output,
+                parent.id,
+            )
+            for output in device.outputs
+        )
+    async_add_entities(entities)
 
 
 class CoseligLight(CoordinatorEntity[Coordinator], LightEntity):
     _attr_has_entity_name = True
 
     def __init__(
-        self, coordinator: Coordinator, entry_id: str, device: Device, output: Output
+        self,
+        coordinator: Coordinator,
+        entry_id: str,
+        device: Device,
+        output: Output,
+        parent_device_id: str,
     ) -> None:
         super().__init__(coordinator)
         self.device, self.output = device, output
         self._attr_name = output.name
         self._attr_unique_id = output.unique_id(entry_id, device.slave)
-        self._attr_device_info = DeviceInfo(
-            identifiers={(DOMAIN, f"{entry_id}_slave_{device.slave}")},
-            name=f"Coselig {device.model.value.upper()} #{device.slave:02d}",
-            manufacturer="Coselig",
-            model=device.model.value.upper(),
+        self._attr_device_info: ChildDeviceInfo = ChildDeviceInfo(
+            identifiers={(DOMAIN, self._attr_unique_id)},
+            name=output.name,
+            parent_device_id=parent_device_id,
         )
         mode = ColorMode.COLOR_TEMP if output.cct else ColorMode.BRIGHTNESS
         self._attr_supported_color_modes = {mode}

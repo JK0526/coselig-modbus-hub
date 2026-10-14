@@ -1,4 +1,4 @@
-# Coselig Modbus Hub v1.1.2
+# Coselig Modbus Hub v1.2.0
 
 將 Coselig **P404／P210** 透過 TCP／RS485 Gateway 加入 Home Assistant，直接建立 Native LightEntity。設備與連線設定全走 HA 原生介面；不需要 MQTT、Node-RED 或 YAML。新增的唯讀 Modbus Monitor 只顯示通訊封包，不提供設備管理或寫入工具。
 
@@ -7,7 +7,7 @@ P404 / P210 → RS485 → TCP Gateway → RTU Transport → Coordinator → Nati
                                     └→ Memory Trace → Read-only Monitor
 ```
 
-套件 **1.1.2**，domain `coselig_modbus_hub`，Config Entry schema `2.1`。最低 HA Core **2026.10.0**；本機測試使用 **2026.10.1／Python 3.14.7**。
+套件 **1.2.0**，domain `coselig_modbus_hub`，Config Entry schema `2.1`。最低 HA Core **2026.10.0**；本機測試使用 **2026.10.1／Python 3.14.7**。
 
 ## 安裝與第一次設定
 
@@ -17,7 +17,7 @@ P404 / P210 → RS485 → TCP Gateway → RTU Transport → Coordinator → Nati
 4. TCP 成功後先顯示 **搜尋 Modbus 設備**。第一次預設 `1～247`，可改成現場範圍，例如 `51～80` 或 `1～10`。**進入頁面不會掃描；按「開始搜尋」後才送 request。**
 5. 原生 Progress 顯示搜尋進度與找到設備數。若找不到，可回到範圍頁重試、改範圍或取消，不建立半完成 Entry。
 6. 勾選要加入的 Slave，再逐台指定 **P404／P210**（預設 P404）；Scanner 不猜型號、不自動加入設備。
-7. P404 設定 Group A／B；P210 只設定 Group A，預設 **2 × 單路調光**，也可選 **1 × 雙色溫 CCT**。完成後建立每 Slave 一個 Device 與其 LightEntities。
+7. P404 設定 Group A／B；P210 只設定 Group A，預設 **2 × 單路調光**，也可選 **1 × 雙色溫 CCT**。完成後建立每 Slave 一個 Parent Device，並為每個有效輸出建立原生 Child Device 與 LightEntity。
 
 搜尋範圍限整數 `1～247` 且 start≤end；縮小範圍可節省無回應位址的等待時間。共同 probe 為 `0x03／0x082A／count 2`，只接受 slave／function／length／CRC 全部合法的回應。
 
@@ -78,13 +78,13 @@ HA 啟動／Entry reload 沒有持久化 runtime cache，因此即使設定 0，
 
 Group 模式切換只替換指定 Group 的 Entity Registry 項目；另一 Group 的 unique_id、entity_id、自訂名稱與 Area 保留。被移除輸出的自動化參照需人工調整；切回不保證還原已刪實體的 metadata。
 
-## 每個 Entity 個別指定 Area
+## Parent／Child Device 與個別 Area
 
-同一顆 P404 仍只有 **一個 HA Device**，可不指定 Device Area，或由使用者設為弱電箱等。
+每個 Slave 是一個 Parent Device，CH1～CH4 或 Group A／B 是其原生 Child Device。Parent 可代表弱電箱等實體位置；Child 沿用 HA 原生 parent-child registry 關係。
 
 在 HA 的個別實體設定頁，將 **CH1→客廳、CH2→餐廳、CH3→玄關、CH4→廚房**，或將 CCT A／B 分別指定不同 Area。使用 HA 原生 Entity Registry，不新增 area mapping、room database 或 integration 欄位。
 
-整合不設定 suggested_area、不改 entity_registry.area_id；reload、重新搜尋及 options change 都不覆寫使用者 Area 或名稱。刪除／替換的輸出則屬新的 registry lifecycle，請按需求重新設定。
+整合不設定 suggested_area、不儲存 area mapping，也不改 entity_registry.area_id；reload、重新搜尋及 options change 都不覆寫使用者 Area 或名稱。每個 Child 可獨立指定 Area，未指定時由 HA 處理 Parent 的繼承顯示。刪除／替換的輸出則屬新的 registry lifecycle，請按需求重新設定。
 
 ## Reconfigure、身份與故障恢復
 
@@ -120,6 +120,8 @@ Round time 從取得輪詢 lock、開始第一個 configured Slave 到本輪最�
 
 **v1.0.x → v1.1.1**：HACS → Coselig Modbus Hub → Update → 重啟 HA；保留 Entry、devices、名稱與 Area，不需刪除重建。載入新版後改 polling interval 不需再 reload。v1.1.0 的 P210 舊設定缺少 `group_a` 時會自動視為 `single`。
 
+**v1.1.2 → v1.2.0**：保留既有 Parent Device、entity_id、unique_id、名稱與 Area。重新載入後 HA 會為每個有效輸出建立原生 Child Device，不需刪除整合或重新加入設備。
+
 **v0.2.x → v1.x** 仍是 Clean Break：先備份 HA，移除舊 Entry，更新、重啟並重新新增。舊 MQTT retained Discovery／實體／自動化需自行檢查清理；新版不連 broker。正式切換前停用寫入相同設備的舊流程。
 
 - 使用帶 CRC 的 RTU over TCP，不是 MBAP Modbus TCP。
@@ -141,4 +143,4 @@ node --test tests/frontend/monitor.test.cjs
 
 Python 測試直接使用正式 custom component、HA APIs 與 loopback Gateway；前端以 Node 內建 runner 獨立測試，不計入 Python coverage。Config Flow 行／分支要求100%，整體 coverage≥99%。
 
-詳見 [v1.1.2 發布說明](docs/v1.1.2-release-notes.md)、[v1.1.1 發布說明](docs/v1.1.1-release-notes.md)、[v1.1 實作與發布報告](docs/v1.1-implementation-report.md)、[開發架構](docs/development.md)、[實機驗收清單](docs/v1.0-acceptance.md)。**尚未完成 24～48 小時實機 soak test，測試通過不代表現場全部功能已驗收。**
+詳見 [v1.2.0 發布說明](docs/v1.2.0-release-notes.md)、[v1.1.2 發布說明](docs/v1.1.2-release-notes.md)、[v1.1.1 發布說明](docs/v1.1.1-release-notes.md)、[v1.1 實作與發布報告](docs/v1.1-implementation-report.md)、[開發架構](docs/development.md)、[實機驗收清單](docs/v1.0-acceptance.md)。**尚未完成 24～48 小時實機 soak test，測試通過不代表現場全部功能已驗收。**

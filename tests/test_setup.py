@@ -14,6 +14,7 @@ from custom_components.coselig_modbus_hub import (
 )
 from custom_components.coselig_modbus_hub.const import DOMAIN
 from custom_components.coselig_modbus_hub.hub import Hub
+from custom_components.coselig_modbus_hub.models import Device, Model
 from custom_components.coselig_modbus_hub.transport import GatewayError
 
 
@@ -101,9 +102,23 @@ async def test_real_ha_platform_and_registry(hass, entry, gateway):
     registry = er.async_get(hass)
     entities = er.async_entries_for_config_entry(registry, entry.entry_id)
     assert len(entities) == 6
-    devices = dr.async_entries_for_config_entry(dr.async_get(hass), entry.entry_id)
-    assert len(devices) == 2  # No gateway device.
-    assert {device.model for device in devices} == {"P404", "P210"}
+    registry_devices = dr.async_get(hass)
+    parents = dr.async_entries_for_config_entry(registry_devices, entry.entry_id)
+    children = dr.async_child_entries_for_config_entry(registry_devices, entry.entry_id)
+    devices = [*parents, *children]
+    assert len(devices) == 8  # Two parents and six logical output children.
+    assert {device.model for device in parents} == {"P404", "P210"}
+    assert len(children) == 6
+    assert {identifier for child in children for identifier in child.identifiers} == {
+        (DOMAIN, entity.unique_id) for entity in entities
+    }
+    assert {child.parent_device_id for child in children} == {
+        parent.id for parent in parents
+    }
+    assert all(
+        not hasattr(child, "manufacturer") and not hasattr(child, "model")
+        for child in children
+    )
     assert all(hass.states.get(entity.entity_id).state == "on" for entity in entities)
     target = next(
         entity for entity in entities if entity.unique_id.endswith("_slave_1_ch1")
@@ -123,6 +138,105 @@ async def test_real_ha_platform_and_registry(hass, entry, gateway):
     hub = entry.runtime_data
     assert await hass.config_entries.async_unload(entry.entry_id)
     assert hub.transport._closed
+
+
+async def test_v112_registry_migrates_parent_entities_to_children(hass, entry, gateway):
+    """Existing v1.1.2 entities keep IDs and metadata while gaining child devices."""
+    from homeassistant.helpers import area_registry as ar
+
+    hass.config_entries.async_update_entry(
+        entry, data={"host": "127.0.0.1", "port": gateway.port}
+    )
+    entity_registry = er.async_get(hass)
+    device_registry = dr.async_get(hass)
+    rooms = ar.async_get(hass)
+    areas = [rooms.async_create("舊區域 A"), rooms.async_create("舊區域 B")]
+    parent_ids: dict[int, str] = {}
+    old_entities: dict[str, tuple[str, str, str, str]] = {}
+    for configured, area in zip(
+        (Device(1, Model.P404), Device(3, Model.P210)), areas, strict=True
+    ):
+        parent = device_registry.async_get_or_create(
+            config_entry_id=entry.entry_id,
+            identifiers={(DOMAIN, f"{entry.entry_id}_slave_{configured.slave}")},
+            name=f"Coselig {configured.model.value.upper()} #{configured.slave:02d}",
+            manufacturer="Coselig",
+            model=configured.model.value.upper(),
+        )
+        parent_ids[configured.slave] = parent.id
+        for output in configured.outputs:
+            unique_id = output.unique_id(entry.entry_id, configured.slave)
+            entity = entity_registry.async_get_or_create(
+                "light",
+                DOMAIN,
+                unique_id,
+                config_entry=entry,
+                device_id=parent.id,
+            )
+            custom_name = f"舊版 {output.name}"
+            entity_registry.async_update_entity(
+                entity.entity_id, name=custom_name, area_id=area.id
+            )
+            old_entities[unique_id] = (
+                entity.entity_id,
+                custom_name,
+                area.id,
+                parent.id,
+            )
+
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+    for unique_id, (entity_id, custom_name, area_id, parent_id) in old_entities.items():
+        current = entity_registry.async_get(entity_id)
+        assert current is not None
+        assert current.unique_id == unique_id
+        assert current.name == custom_name
+        assert current.area_id == area_id
+        assert current.device_id != parent_id
+        child = device_registry.async_get(current.device_id)
+        assert child is not None
+        assert child.parent_device_id == parent_id
+
+    assert {
+        device.id
+        for device in dr.async_entries_for_config_entry(device_registry, entry.entry_id)
+    } == set(parent_ids.values())
+    children = dr.async_child_entries_for_config_entry(device_registry, entry.entry_id)
+    assert {next(iter(child.identifiers)) for child in children} == {
+        (DOMAIN, unique_id) for unique_id in old_entities
+    }
+    assert {child.parent_device_id for child in children} == set(parent_ids.values())
+    assert await hass.config_entries.async_unload(entry.entry_id)
+
+
+async def test_cct_outputs_register_as_group_children(hass, entry, gateway):
+    hass.config_entries.async_update_entry(
+        entry,
+        data={"host": "127.0.0.1", "port": gateway.port},
+        options={
+            **entry.options,
+            "devices": [
+                {"slave": 1, "model": "p404", "group_a": "cct", "group_b": "cct"},
+                {"slave": 3, "model": "p210", "group_a": "cct"},
+            ],
+        },
+    )
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+    entities = er.async_entries_for_config_entry(er.async_get(hass), entry.entry_id)
+    assert {entity.unique_id for entity in entities} == {
+        f"{entry.entry_id}_slave_1_group_a",
+        f"{entry.entry_id}_slave_1_group_b",
+        f"{entry.entry_id}_slave_3_group_a",
+    }
+    children = dr.async_child_entries_for_config_entry(
+        dr.async_get(hass), entry.entry_id
+    )
+    assert {identifier for child in children for identifier in child.identifiers} == {
+        (DOMAIN, entity.unique_id) for entity in entities
+    }
+    assert await hass.config_entries.async_unload(entry.entry_id)
 
 
 async def test_shutdown_closes_socket_and_tasks(hass, entry, gateway):
