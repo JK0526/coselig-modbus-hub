@@ -24,10 +24,10 @@ class CoseligModbusMonitor extends HTMLElement {
         pre{background:var(--card-background-color);padding:16px;border-radius:8px;max-height:70vh;overflow:auto;font-size:13px;white-space:pre}
         .trace-entry{display:flex;gap:.7em;line-height:1.55;white-space:pre-wrap}
         .trace-time,.trace-latency{color:var(--secondary-text-color)}
-        .trace-tx,.trace-raw-tx{color:var(--info-color,var(--primary-color))}
-        .trace-rx,.trace-ok,.trace-raw-rx{color:var(--success-color,var(--primary-color))}
-        .trace-timeout{color:var(--warning-color,var(--orange-color,var(--primary-color)))}
-        .trace-crc-error,.trace-error{color:var(--error-color,var(--primary-color))}
+        .trace-tx,.trace-raw-tx{color:#42a5f5}
+        .trace-rx,.trace-ok,.trace-raw-rx{color:#66bb6a}
+        .trace-timeout{color:#ffb74d}
+        .trace-crc-error,.trace-error{color:#ef5350}
       </style><h1>Coselig Modbus Monitor</h1><header><select aria-label="Gateway"></select>
         <button id="clear">清除</button><button id="pause">暫停畫面</button></header>
         <div id="status"></div><div id="error" role="alert"></div><pre aria-label="Modbus Raw HEX"></pre>`;

@@ -3,6 +3,7 @@ const assert = require('node:assert/strict');
 const vm = require('node:vm');
 const fs = require('node:fs');
 const path = require('node:path');
+const monitorSource = fs.readFileSync(path.join(__dirname,'../../custom_components/coselig_modbus_hub/monitor.js'),'utf8');
 
 class Element {
   constructor() { this._text = ''; this.value = ''; this.children = []; this.className = ''; }
@@ -22,7 +23,7 @@ function createHarness(gateways = [{entry_id:'one',title:'Gateway <script>'},{en
     customElements: { define(name, cls) { assert.equal(name,'coselig-modbus-monitor'); Constructor=cls; } },
     document: { createElement() { return new Element(); } }, Date, String,
   });
-  vm.runInContext(fs.readFileSync(path.join(__dirname,'../../custom_components/coselig_modbus_hub/monitor.js'),'utf8'),context);
+  vm.runInContext(monitorSource,context);
   const calls=[],subscriptions=[];
   const hass={ language:'zh-TW',callWS:async (request) => { calls.push(request); return request.type.endsWith('/list') ? gateways : undefined; },
     connection:{subscribeMessage:async(callback,request) => { const sub={callback,request,closed:false}; subscriptions.push(sub); return async() => {sub.closed=true;}; }} };
@@ -78,6 +79,15 @@ test('trace direction and status classes use HA theme colors',async()=>{
   assert.equal(rows[0].children[0].className,'trace-time');
   assert.equal(rows[2].children[3].className,'trace-latency');
   h.panel.disconnectedCallback();
+});
+
+test('trace CSS defines fixed colors and keeps secondary metadata theme-aware',()=>{
+  assert.match(monitorSource,/\.trace-tx,\.trace-raw-tx\{color:#42a5f5\}/);
+  assert.match(monitorSource,/\.trace-rx,\.trace-ok,\.trace-raw-rx\{color:#66bb6a\}/);
+  assert.match(monitorSource,/\.trace-timeout\{color:#ffb74d\}/);
+  assert.match(monitorSource,/\.trace-crc-error,\.trace-error\{color:#ef5350\}/);
+  assert.match(monitorSource,/\.trace-time,\.trace-latency\{color:var\(--secondary-text-color\)\}/);
+  assert.match(monitorSource,/background:var\(--card-background-color\)/);
 });
 
 test('switch gateway ignores old events; reconnect maintains one active subscription',async()=>{
