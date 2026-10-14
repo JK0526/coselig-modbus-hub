@@ -82,6 +82,51 @@ async def test_group_mode_lifecycle_only_target_group(hass, entry, group):
         )
 
 
+async def test_p210_group_a_mode_lifecycle_and_area(hass, entry):
+    registry = er.async_get(hass)
+    devices = dr.async_get(hass)
+    device = devices.async_get_or_create(
+        config_entry_id=entry.entry_id,
+        identifiers={(DOMAIN, f"{entry.entry_id}_slave_62")},
+        manufacturer="Coselig",
+        model="P210",
+        name="Coselig P210 #62",
+    )
+    for output in Device(62, Model.P210).outputs:
+        registry.async_get_or_create(
+            "light",
+            DOMAIN,
+            output.unique_id(entry.entry_id, 62),
+            config_entry=entry,
+            device_id=device.id,
+        )
+    hass.config_entries.async_update_entry(
+        entry,
+        options={
+            **entry.options,
+            "devices": [{"slave": 62, "model": "p210", "group_a": "cct"}],
+        },
+    )
+    prune_registries(hass, entry)
+    assert registry.async_get(f"light.{entry.entry_id}_slave_62_ch1") is None
+    assert registry.async_get(f"light.{entry.entry_id}_slave_62_ch2") is None
+    group = registry.async_get_or_create(
+        "light",
+        DOMAIN,
+        f"{entry.entry_id}_slave_62_group_a",
+        config_entry=entry,
+        device_id=device.id,
+    )
+    from homeassistant.helpers import area_registry as ar
+
+    area = ar.async_get(hass).async_create("P210 CCT")
+    registry.async_update_entity(group.entity_id, area_id=area.id, name="保留 CCT")
+    prune_registries(hass, entry)
+    saved = registry.async_get(group.entity_id)
+    assert saved.area_id == area.id
+    assert saved.name == "保留 CCT"
+
+
 async def test_device_removal_is_explicit(hass, entry):
     registry, devices, device = await populate(hass, entry)
     hass.config_entries.async_update_entry(

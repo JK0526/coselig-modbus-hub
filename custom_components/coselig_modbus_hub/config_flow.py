@@ -277,18 +277,23 @@ class ProfileFlow:
         indices = [
             index
             for index, device in enumerate(self._devices)
-            if device.model == Model.P404
+            if device.model in (Model.P404, Model.P210)
         ]
         if self._group_index >= len(indices):
             return self._finish()
         index = indices[self._group_index]
         device = self._devices[index]
         if user_input is not None:
-            self._devices[index] = Device(
-                device.slave,
-                device.model,
-                GroupMode(user_input["group_a"]),
-                GroupMode(user_input["group_b"]),
+            group_a = GroupMode(user_input["group_a"])
+            self._devices[index] = (
+                Device(device.slave, device.model, group_a)
+                if device.model == Model.P210
+                else Device(
+                    device.slave,
+                    device.model,
+                    group_a,
+                    GroupMode(user_input["group_b"]),
+                )
             )
             self._group_index += 1
             return await self.async_step_groups()
@@ -296,19 +301,17 @@ class ProfileFlow:
             {"value": "single", "label": "2 × independent dimmers / 2 × 單路調光"},
             {"value": "cct", "label": "1 × CCT / 1 × 雙色溫"},
         ]
+        fields: dict[Any, Any] = {
+            vol.Required("group_a", default=device.group_a.value): select(choices)
+        }
+        if device.model == Model.P404:
+            fields[vol.Required("group_b", default=device.group_b.value)] = select(
+                choices
+            )
         return self.async_show_form(
             step_id="groups",
             description_placeholders={"slave": f"{device.slave:02d}"},
-            data_schema=vol.Schema(
-                {
-                    vol.Required("group_a", default=device.group_a.value): select(
-                        choices
-                    ),
-                    vol.Required("group_b", default=device.group_b.value): select(
-                        choices
-                    ),
-                }
-            ),
+            data_schema=vol.Schema(fields),
         )
 
     async def async_step_cancel(

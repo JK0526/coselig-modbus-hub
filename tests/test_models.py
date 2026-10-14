@@ -44,8 +44,26 @@ def test_defaults_and_p210():
     p210 = Device(2, Model.P210)
     assert [o.name for o in p210.outputs] == ["CH1", "CH2"]
     assert p210.poll_count == 2
-    assert p210.as_dict() == {"slave": 2, "model": "p210"}
+    assert p210.group_a == GroupMode.SINGLE
+    assert p210.group_b is None
+    assert p210.as_dict() == {"slave": 2, "model": "p210", "group_a": "single"}
     assert not any(output.cct for output in p210.outputs)
+
+
+def test_p210_cct_is_group_a_only():
+    p210 = Device(62, Model.P210, GroupMode.CCT)
+    assert p210.poll_count == 2
+    assert p210.group_b is None
+    assert [(output.key, output.registers) for output in p210.outputs] == [
+        ("group_a", (0x082A, 0x082B))
+    ]
+    assert p210.as_dict() == {"slave": 62, "model": "p210", "group_a": "cct"}
+
+
+def test_p210_legacy_config_defaults_group_a_to_single():
+    p210 = Device.from_dict({"slave": 62, "model": "p210"})
+    assert p210.group_a is GroupMode.SINGLE
+    assert p210.outputs == Device(62, Model.P210, GroupMode.SINGLE).outputs
 
 
 @pytest.mark.parametrize(
@@ -55,7 +73,7 @@ def test_defaults_and_p210():
         (248, "p404"),
         (True, "p404"),
         (1, "U4"),
-        (1, "p210", "single"),
+        (1, "p210", "single", "single"),
         (1, "p404", "invalid"),
     ],
 )

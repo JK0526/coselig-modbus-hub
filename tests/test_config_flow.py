@@ -111,11 +111,13 @@ async def test_user_error_retry_and_progress(flow):
     assert (await flow.async_step_model({"model": "p404"}))["step_id"] == "model"
     assert (await flow.async_step_model({"model": "p210"}))["step_id"] == "groups"
     result = await flow.async_step_groups({"group_a": "single", "group_b": "single"})
+    assert result["step_id"] == "groups"
+    result = await flow.async_step_groups({"group_a": "single"})
     assert result["type"] == FlowResultType.CREATE_ENTRY
     assert result["data"] == {"host": "test", "port": 502}
     assert result["options"]["devices"] == [
         {"slave": 1, "model": "p404", "group_a": "single", "group_b": "single"},
-        {"slave": 3, "model": "p210"},
+        {"slave": 3, "model": "p210", "group_a": "single"},
     ]
     assert result["version"] == 2
     assert result["minor_version"] == 1
@@ -144,8 +146,11 @@ async def test_empty_or_disconnected_scan_retry(flow, failure):
         assert (await flow.async_step_scan())["step_id"] == "scan_result"
     await flow.async_step_scan_result({"devices": ["7"]})
     result = await flow.async_step_model({"model": "p210"})
+    result = await flow.async_step_groups({"group_a": "single"})
     assert result["type"] == FlowResultType.CREATE_ENTRY
-    assert result["options"]["devices"] == [{"slave": 7, "model": "p210"}]
+    assert result["options"]["devices"] == [
+        {"slave": 7, "model": "p210", "group_a": "single"}
+    ]
 
 
 async def test_range_validation_and_cancellation(flow):
@@ -210,6 +215,7 @@ async def test_manage_preserve_missing_add_new(options):
     await options.async_step_model({"model": "p210"})
     await options.async_step_model({"model": "p404"})
     await options.async_step_groups({"group_a": "cct", "group_b": "single"})
+    await options.async_step_groups({"group_a": "single"})
     result = await options.async_step_groups({"group_a": "single", "group_b": "cct"})
     assert [d["slave"] for d in result["data"]["devices"]] == [1, 3, 7]
     assert result["data"]["devices"][0]["group_a"] == "cct"
@@ -227,6 +233,38 @@ async def test_manage_edit_or_remove_all(options):
     assert result["data"]["devices"][0]["model"] == "p404"
     result = await options.async_step_manage_devices({"devices": []})
     assert result["data"]["devices"] == []
+
+
+async def test_p210_group_a_mode_and_legacy_default(options):
+    await options.async_step_init()
+    await options.async_step_manage_devices({"devices": ["3"]})
+    assert (await options.async_step_model())["data_schema"]({})["model"] == "p210"
+    result = await options.async_step_model({"model": "p210"})
+    assert result["step_id"] == "groups"
+    schema = result["data_schema"]
+    assert schema({})["group_a"] == "single"
+    assert "group_b" not in schema.schema
+    result = await options.async_step_groups({"group_a": "cct"})
+    assert result["data"]["devices"] == [
+        {"slave": 3, "model": "p210", "group_a": "cct"}
+    ]
+
+
+async def test_p210_rescan_preserves_selected_group_mode(options, entry):
+    hass_options = {
+        **entry.options,
+        "devices": [{"slave": 3, "model": "p210", "group_a": "cct"}],
+    }
+    options.hass.config_entries.async_update_entry(entry, options=hass_options)
+    await options.async_step_init()
+    await options.async_step_manage_devices({"devices": ["3"]})
+    await options.async_step_model({"model": "p210"})
+    form = await options.async_step_groups()
+    assert form["data_schema"]({})["group_a"] == "cct"
+    result = await options.async_step_groups({"group_a": "cct"})
+    assert result["data"]["devices"] == [
+        {"slave": 3, "model": "p210", "group_a": "cct"}
+    ]
 
 
 async def test_options_runtime_scan_pauses(options, entry, hass):
@@ -285,6 +323,9 @@ async def test_full_native_flow_manager(hass):
         assert result["step_id"] == "groups"
         result = await hass.config_entries.flow.async_configure(
             flow_id, {"group_a": "single", "group_b": "single"}
+        )
+        result = await hass.config_entries.flow.async_configure(
+            flow_id, {"group_a": "single"}
         )
         assert result["type"] == FlowResultType.CREATE_ENTRY
         assert len(hass.config_entries.async_entries(DOMAIN)) == 1
@@ -423,6 +464,7 @@ async def test_tcp_success_never_scans_until_range_submitted(flow, gateway, star
         }
         await flow.async_step_scan_result({"devices": [str(start)]})
         result = await flow.async_step_model({"model": "p210"})
+        result = await flow.async_step_groups({"group_a": "single"})
         assert result["options"]["scan_start"] == start
         assert result["options"]["scan_end"] == end
 
@@ -457,6 +499,8 @@ async def test_rescan_remembers_range_then_persists_new_range(options, entry, ha
     await options.async_step_model({"model": "p404"})
     await options.async_step_model({"model": "p210"})
     await options.async_step_model({"model": "p210"})
-    result = await options.async_step_groups({"group_a": "single", "group_b": "single"})
+    await options.async_step_groups({"group_a": "single", "group_b": "single"})
+    await options.async_step_groups({"group_a": "cct"})
+    result = await options.async_step_groups({"group_a": "single"})
     assert result["data"]["scan_start"] == 60
     assert result["data"]["scan_end"] == 74

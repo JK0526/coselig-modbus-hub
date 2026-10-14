@@ -1,7 +1,7 @@
 """Fixed protocol defaults; only user-facing settings are persisted."""
 
 DOMAIN = "coselig_modbus_hub"
-VERSION = "1.1.0"
+VERSION = "1.1.1"
 DEFAULT_PORT = 502
 DEFAULT_TIMEOUT = 0.5
 DEFAULT_POLL_INTERVAL = 2.0

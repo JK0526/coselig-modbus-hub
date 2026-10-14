@@ -164,3 +164,28 @@ async def test_fast_cct_brightness_and_temperature_latest_wins(gateway, lights):
     ]
     assert light.brightness == 204
     assert light.color_temp_kelvin == 5714
+
+
+async def test_p210_cct_uses_two_register_shared_conversion(gateway, hass):
+    device = Device(62, Model.P210, "cct")
+    assert [output.key for output in device.outputs] == ["group_a"]
+    transport = Transport("127.0.0.1", gateway.port, timeout=0.04)
+    coordinator = Coordinator(hass, transport, (device,), 2)
+    await coordinator.async_poll_round()
+    light = CoseligLight(coordinator, "entry", device, device.outputs[0])
+    light.hass = hass
+    light.async_write_ha_state = Mock()
+    try:
+        assert light.brightness == raw_to_brightness(20)
+        await light.async_turn_on(brightness=128, color_temp_kelvin=4000)
+        assert light.brightness == 128
+        assert abs(light.color_temp_kelvin - 4000) < 30
+        assert [
+            int.from_bytes(request[2:4], "big") for request in gateway.requests[-2:]
+        ] == [
+            0x082A,
+            0x082B,
+        ]
+    finally:
+        await coordinator.stop()
+        await transport.close()

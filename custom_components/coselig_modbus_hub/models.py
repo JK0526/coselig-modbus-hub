@@ -45,8 +45,11 @@ class Device:
             raise ValueError("Slave must be an integer 1..247")
         object.__setattr__(self, "model", Model(self.model))
         if self.model == Model.P210:
-            if self.group_a is not None or self.group_b is not None:
-                raise ValueError("P210 does not support groups")
+            if self.group_b is not None:
+                raise ValueError("P210 does not support Group B")
+            object.__setattr__(
+                self, "group_a", GroupMode(self.group_a or GroupMode.SINGLE)
+            )
         else:
             object.__setattr__(
                 self, "group_a", GroupMode(self.group_a or GroupMode.SINGLE)
@@ -84,7 +87,9 @@ class Device:
 
     def as_dict(self) -> dict[str, Any]:
         result = {"slave": self.slave, "model": self.model.value}
-        if self.model == Model.P404:
+        if self.model == Model.P210:
+            result["group_a"] = self.group_a.value
+        else:
             result.update(group_a=self.group_a.value, group_b=self.group_b.value)
         return result
 

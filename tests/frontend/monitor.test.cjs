@@ -5,9 +5,11 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 class Element {
-  constructor() { this.textContent = ''; this.value = ''; this.children = []; }
-  replaceChildren() { this.children = []; }
-  append(child) { this.children.push(child); }
+  constructor() { this._text = ''; this.value = ''; this.children = []; this.className = ''; }
+  get textContent() { return this._text + this.children.map(child => child.textContent).join(''); }
+  set textContent(value) { this._text = String(value); this.children = []; }
+  replaceChildren(...children) { this._text = ''; this.children = children; }
+  append(...children) { this.children.push(...children); }
 }
 class Shadow {
   constructor() { this.nodes = Object.fromEntries(['select','#clear','#pause','#status','#error','pre'].map(id => [id, new Element()])); }
@@ -51,6 +53,31 @@ test('raw HEX and latency render as text; pause freezes only the view',async()=>
   assert.equal(pre.textContent,'');
   assert.ok(h.calls.every(call=>['coselig_modbus_hub/monitor/list','coselig_modbus_hub/monitor/clear'].includes(call.type)));
   h.panel.disconnectedCallback(); await h.flush(); assert.equal(h.subscriptions[0].closed,true);
+});
+
+test('trace direction and status classes use HA theme colors',async()=>{
+  const h=createHarness(); await h.flush();
+  h.subscriptions[0].callback({connected:true,poll_interval:2,polling_paused:false,entries:[
+    {timestamp:'2026-10-14T06:32:08.214Z',direction:'TX',raw_hex:'AA',latency_ms:null},
+    {timestamp:'2026-10-14T06:32:08.215Z',direction:'RX',raw_hex:'BB',latency_ms:null},
+    {timestamp:'2026-10-14T06:32:08.216Z',direction:'OK',raw_hex:'',latency_ms:1},
+    {timestamp:'2026-10-14T06:32:08.217Z',direction:'TIMEOUT',raw_hex:'',latency_ms:null},
+    {timestamp:'2026-10-14T06:32:08.218Z',direction:'CRC ERROR',raw_hex:'',latency_ms:null},
+    {timestamp:'2026-10-14T06:32:08.219Z',direction:'ERROR',raw_hex:'',latency_ms:null},
+  ]});
+  const rows=h.panel.shadowRoot.querySelector('pre').children;
+  assert.deepEqual([...rows].map(row=>row.className),[
+    'trace-entry trace-tx','trace-entry trace-rx','trace-entry trace-ok',
+    'trace-entry trace-timeout','trace-entry trace-crc-error','trace-entry trace-error',
+  ]);
+  assert.equal(rows[0].children[1].className,'trace-status trace-tx');
+  assert.equal(rows[0].children[2].className,'trace-raw trace-raw-tx');
+  assert.equal(rows[1].children[2].className,'trace-raw trace-raw-rx');
+  assert.equal(rows[3].children[1].className,'trace-status trace-timeout');
+  assert.equal(rows[4].children[1].className,'trace-status trace-crc-error');
+  assert.equal(rows[0].children[0].className,'trace-time');
+  assert.equal(rows[2].children[3].className,'trace-latency');
+  h.panel.disconnectedCallback();
 });
 
 test('switch gateway ignores old events; reconnect maintains one active subscription',async()=>{

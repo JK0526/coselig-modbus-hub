@@ -23,7 +23,7 @@
 
 ## 資料與交易
 
-永久 data 僅 `host`／`port`；options 僅 `poll_interval`、`scan_start`、`scan_end`、`devices[]`。P210 不含 group 欄位。Entry schema 2.1；舊 schema 明確拒絕自動遷移。
+永久 data 僅 `host`／`port`；options 僅 `poll_interval`、`scan_start`、`scan_end`、`devices[]`。P404 保存 `group_a`／`group_b`，P210 只保存 `group_a`；v1.1.0 缺少 P210 `group_a` 時由 `Device.from_dict()` 預設為 `single`。Entry schema 2.1；舊 schema 明確拒絕自動遷移。
 
 Entity 操作先寫 HA optimistic 狀態，再依同一操作順序入列。CCT 的亮度與色溫為不同合併 key，各自在 bus 上驗證 0x06 echo。Python 3.14 eager task 用於避免同一 loop tick 的 ON／OFF 或 CCT 子指令順序反轉。
 
@@ -76,4 +76,8 @@ Polling=0 只讓背景scheduler等待Event，既有狀態／failure保留，寫�
 
 20輪時間deque只量測bus round，不含lock等待／下一輪sleep；不自動調interval或降頻Slave。原生Entity Registry的area_id完全由HA與使用者管理，不加入area欄位或多個Device。
 
-Monitor訂閱每0.5秒讀取ring快照，只在變更時推送；無Modbus I/O。訂閱取消／WS斷線清timer。UI paused只凍結顯示，最新快照仍有200筆上限。所有WS命令要求admin，只提供list／subscribe／clear，沒有任何register或設定寫入。Trace例外隔離；完整RX記錄在原CRC驗證前，結果之後另記OK／ERROR及latency。
+Monitor訂閱每0.5秒讀取ring快照，只在變更時推送；無Modbus I/O。訂閱取消／WS斷線清timer。UI paused只凍結顯示，最新快照仍有200筆上限。所有WS命令要求admin，只提供list／subscribe／clear，沒有任何register或設定寫入。Trace例外隔離；完整RX記錄在原CRC驗證前，結果之後另記OK／ERROR及latency。前端以HA theme CSS variables 對 TX／RX／OK／TIMEOUT／CRC ERROR／ERROR 分色，未改 protocol 或 WebSocket schema。
+
+## v1.1.1 行為
+
+P210 的 Group A 可選 `single` 或 `cct`；single 建立 CH1／CH2，cct 只建立 `group_a` 雙色溫 entity，兩者均固定 FC03 起點 `0x082A`、count 2。P404 的 Group A／B 行為不變。切換輸出模式沿用既有 registry 差異清理與原生 Area／名稱保存策略。

@@ -43,6 +43,23 @@ async def test_round_shapes_and_slave_isolation(gateway, coordinator, caplog):
     assert coordinator.states[1].consecutive_failures == 0
 
 
+@pytest.mark.parametrize("mode", ["single", "cct"])
+async def test_p210_poll_count_stays_two_for_all_output_modes(hass, gateway, mode):
+    device = Device(62, Model.P210, mode)
+    transport = Transport("127.0.0.1", gateway.port, timeout=0.025)
+    coordinator = Coordinator(hass, transport, (device,), 2)
+    try:
+        await coordinator.async_poll_round()
+        assert len(gateway.requests) == 1
+        assert gateway.requests[0][0] == 62
+        assert gateway.requests[0][1] == 3
+        assert int.from_bytes(gateway.requests[0][4:6], "big") == 2
+        assert coordinator.states[62].available
+    finally:
+        await coordinator.stop()
+        await transport.close()
+
+
 async def test_gateway_loss_everyone_unavailable(gateway, coordinator, caplog):
     await coordinator.async_poll_round()
     gateway.modes[1] = "disconnect"

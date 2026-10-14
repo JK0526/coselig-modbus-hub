@@ -55,8 +55,8 @@
         }
       },
       "groups": {
-        "title": "Slave {slave}：P404 輸出模式",
-        "description": "新 P404 預設為四路獨立調光。CCT 沿用第一個 register 控制亮度、第二個控制色溫的協議。",
+        "title": "Slave {slave}：輸出模式",
+        "description": "請設定 Group A；P404 另需設定 Group B。CCT 沿用第一個 register 控制亮度、第二個控制色溫的協議。",
         "data": {
           "group_a": "Group A：輸出 1＋2",
           "group_b": "Group B：輸出 3＋4"
@@ -117,8 +117,8 @@
         }
       },
       "groups": {
-        "title": "Slave {slave}：P404 輸出模式",
-        "description": "新 P404 預設為四路獨立調光。CCT 沿用第一個 register 控制亮度、第二個控制色溫的協議。",
+        "title": "Slave {slave}：輸出模式",
+        "description": "請設定 Group A；P404 另需設定 Group B。CCT 沿用第一個 register 控制亮度、第二個控制色溫的協議。",
         "data": {
           "group_a": "Group A：輸出 1＋2",
           "group_b": "Group B：輸出 3＋4"

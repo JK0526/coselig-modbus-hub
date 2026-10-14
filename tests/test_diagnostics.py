@@ -24,7 +24,7 @@ async def test_redaction_and_runtime_counters(hass, entry):
     assert result["statistics"]["timeout_count"] == 3
     assert result["coordinator"]["queue_depth"] == 0
     assert result["devices"][0]["group_a"] == "single"
-    assert "group_a" not in result["devices"][1]
+    assert result["devices"][1]["group_a"] == "single"
     assert result["devices"][0]["consecutive_failures"] == 3
     second = Hub.create(hass, "new", 502, (), 2)
     assert second.transport.statistics.timeout_count == 0

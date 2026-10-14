@@ -1,4 +1,4 @@
-# Coselig Modbus Hub v1.1
+# Coselig Modbus Hub v1.1.1
 
 將 Coselig **P404／P210** 透過 TCP／RS485 Gateway 加入 Home Assistant，直接建立 Native LightEntity。設備與連線設定全走 HA 原生介面；不需要 MQTT、Node-RED 或 YAML。新增的唯讀 Modbus Monitor 只顯示通訊封包，不提供設備管理或寫入工具。
 
@@ -7,7 +7,7 @@ P404 / P210 → RS485 → TCP Gateway → RTU Transport → Coordinator → Nati
                                     └→ Memory Trace → Read-only Monitor
 ```
 
-套件 **1.1.0**，domain `coselig_modbus_hub`，Config Entry schema `2.1`。最低 HA Core **2026.10.0**；本機測試使用 **2026.10.1／Python 3.14.7**。
+套件 **1.1.1**，domain `coselig_modbus_hub`，Config Entry schema `2.1`。最低 HA Core **2026.10.0**；本機測試使用 **2026.10.1／Python 3.14.7**。
 
 ## 安裝與第一次設定
 
@@ -17,7 +17,7 @@ P404 / P210 → RS485 → TCP Gateway → RTU Transport → Coordinator → Nati
 4. TCP 成功後先顯示 **搜尋 Modbus 設備**。第一次預設 `1～247`，可改成現場範圍，例如 `51～80` 或 `1～10`。**進入頁面不會掃描；按「開始搜尋」後才送 request。**
 5. 原生 Progress 顯示搜尋進度與找到設備數。若找不到，可回到範圍頁重試、改範圍或取消，不建立半完成 Entry。
 6. 勾選要加入的 Slave，再逐台指定 **P404／P210**（預設 P404）；Scanner 不猜型號、不自動加入設備。
-7. 只對 P404 設定 Group A／B 模式，全部預設 **2 × 單路調光**。完成後建立每 Slave 一個 Device 與其 LightEntities。
+7. P404 設定 Group A／B；P210 只設定 Group A，預設 **2 × 單路調光**，也可選 **1 × 雙色溫 CCT**。完成後建立每 Slave 一個 Device 與其 LightEntities。
 
 搜尋範圍限整數 `1～247` 且 start≤end；縮小範圍可節省無回應位址的等待時間。共同 probe 為 `0x03／0x082A／count 2`，只接受 slave／function／length／CRC 全部合法的回應。
 
@@ -29,11 +29,12 @@ P404 / P210 → RS485 → TCP Gateway → RTU Transport → Coordinator → Nati
 | P404 A CCT／B single | 雙色溫 A、CH3、CH4 |
 | P404 A single／B CCT | CH1、CH2、雙色溫 B |
 | P404 A CCT／B CCT | 雙色溫 A、雙色溫 B |
-| P210（固定） | CH1、CH2，無 Group／CCT |
+| P210 Group A single（預設） | CH1、CH2 |
+| P210 Group A CCT | 雙色溫 A |
 
 Group A 使用 CH1＋CH2，Group B 使用 CH3＋CH4。CCT 沿用第一個 register 控制亮度、第二個控制色溫的協議；請確認接線與模式。HA 色溫使用 Kelvin API，沿用 175～455 mired 映射，約 2198～5714 K。非零最低亮度 2%；零為關閉。U4 不支援。
 
-型號由使用者指定。P210 誤選為 P404 時，4-register poll 不相容；本版依使用者決策不新增自動型號偵測、猜測或提醒流程。
+型號由使用者指定。P210 不論 single 或 CCT 都固定使用 2-register poll；P210 誤選為 P404 時，4-register poll 不相容。本版不新增自動型號偵測、猜測或提醒流程。
 
 ## Modbus Monitor
 
@@ -42,6 +43,8 @@ Group A 使用 CH1＋CH2，Group B 使用 CH3＋CH4。CCT 沿用第一個 regist
 - 瀏覽器本地時間（含毫秒）、TX／RX 完整 Raw HEX。
 - OK／CRC ERROR／TIMEOUT／ERROR 與 transaction latency（毫秒）。
 - Gateway TCP connected 與目前 polling interval。
+
+TX、RX、OK、TIMEOUT、CRC ERROR、ERROR 會依 HA Light／Dark theme 的 CSS variables 顯示不同色彩，timestamp、latency 使用次要文字色，Raw HEX 沿用 TX／RX 色系。
 
 畫面最多保留 **200 筆記憶體 trace**；每約 0.5 秒送出有變更的快照，不增加 Modbus request。HA 重啟／integration reload 後清空；不寫 Recorder、資料庫或檔案，也不把 packet history 放進 Diagnostics。
 
@@ -115,7 +118,7 @@ Round time 從取得輪詢 lock、開始第一個 configured Slave 到本輪最�
 
 ## 升級與已知限制
 
-**v1.0.x → v1.1.0**：HACS → Coselig Modbus Hub → Update → 重啟 HA；保留 Entry、devices、名稱與 Area，不需刪除重建。載入新版後改 polling interval 不需再 reload。
+**v1.0.x → v1.1.1**：HACS → Coselig Modbus Hub → Update → 重啟 HA；保留 Entry、devices、名稱與 Area，不需刪除重建。載入新版後改 polling interval 不需再 reload。v1.1.0 的 P210 舊設定缺少 `group_a` 時會自動視為 `single`。
 
 **v0.2.x → v1.x** 仍是 Clean Break：先備份 HA，移除舊 Entry，更新、重啟並重新新增。舊 MQTT retained Discovery／實體／自動化需自行檢查清理；新版不連 broker。正式切換前停用寫入相同設備的舊流程。
 
@@ -138,4 +141,4 @@ node --test tests/frontend/monitor.test.cjs
 
 Python 測試直接使用正式 custom component、HA APIs 與 loopback Gateway；前端以 Node 內建 runner 獨立測試，不計入 Python coverage。Config Flow 行／分支要求100%，整體 coverage≥99%。
 
-詳見 [v1.1 實作與發布報告](docs/v1.1-implementation-report.md)、[開發架構](docs/development.md)、[實機驗收清單](docs/v1.0-acceptance.md)。**尚未完成 24～48 小時實機 soak test，測試通過不代表現場全部功能已驗收。**
+詳見 [v1.1.1 發布說明](docs/v1.1.1-release-notes.md)、[v1.1 實作與發布報告](docs/v1.1-implementation-report.md)、[開發架構](docs/development.md)、[實機驗收清單](docs/v1.0-acceptance.md)。**尚未完成 24～48 小時實機 soak test，測試通過不代表現場全部功能已驗收。**

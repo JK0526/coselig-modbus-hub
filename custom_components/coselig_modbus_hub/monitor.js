@@ -22,6 +22,12 @@ class CoseligModbusMonitor extends HTMLElement {
         button,select{font:inherit;padding:8px;border:1px solid var(--divider-color);border-radius:6px;color:inherit;background:var(--card-background-color)}
         #status{margin:16px 0} #error{color:var(--error-color)}
         pre{background:var(--card-background-color);padding:16px;border-radius:8px;max-height:70vh;overflow:auto;font-size:13px;white-space:pre}
+        .trace-entry{display:flex;gap:.7em;line-height:1.55;white-space:pre-wrap}
+        .trace-time,.trace-latency{color:var(--secondary-text-color)}
+        .trace-tx,.trace-raw-tx{color:var(--info-color,var(--primary-color))}
+        .trace-rx,.trace-ok,.trace-raw-rx{color:var(--success-color,var(--primary-color))}
+        .trace-timeout{color:var(--warning-color,var(--orange-color,var(--primary-color)))}
+        .trace-crc-error,.trace-error{color:var(--error-color,var(--primary-color))}
       </style><h1>Coselig Modbus Monitor</h1><header><select aria-label="Gateway"></select>
         <button id="clear">清除</button><button id="pause">暫停畫面</button></header>
         <div id="status"></div><div id="error" role="alert"></div><pre aria-label="Modbus Raw HEX"></pre>`;
@@ -109,13 +115,33 @@ class CoseligModbusMonitor extends HTMLElement {
     if (!this._latest) return;
     const snapshot = this._latest;
     this.shadowRoot.querySelector("#status").textContent = `Gateway ${snapshot.connected ? "● Connected" : "○ Disconnected"} · Polling ${snapshot.poll_interval ?? "—"} s${snapshot.polling_paused ? "（背景輪詢已暫停）" : ""}`;
-    const lines = snapshot.entries.map((entry) => {
+    const console = this.shadowRoot.querySelector("pre");
+    console.replaceChildren();
+    snapshot.entries.forEach((entry) => {
       const date = new Date(entry.timestamp);
       const time = `${date.toLocaleTimeString(this._hass.language || "zh-TW", { hour12: false })}.${String(date.getMilliseconds()).padStart(3, "0")}`;
-      return `${time} ${entry.direction.padEnd(9)} ${entry.raw_hex}${entry.latency_ms == null ? "" : `  ${entry.latency_ms.toFixed(1)} ms`}`;
+      const status = String(entry.direction).toLowerCase().replaceAll(" ", "-");
+      const rawFamily = status === "tx" || status === "rx" ? status : "";
+      const line = document.createElement("div");
+      line.className = `trace-entry trace-${status}`;
+      const timestamp = document.createElement("span");
+      timestamp.className = "trace-time";
+      timestamp.textContent = time;
+      const result = document.createElement("span");
+      result.className = `trace-status trace-${status}`;
+      result.textContent = String(entry.direction).padEnd(9);
+      const raw = document.createElement("span");
+      raw.className = `trace-raw${rawFamily ? ` trace-raw-${rawFamily}` : ""}`;
+      raw.textContent = entry.raw_hex || "";
+      line.append(timestamp, result, raw);
+      if (entry.latency_ms != null) {
+        const latency = document.createElement("span");
+        latency.className = "trace-latency";
+        latency.textContent = `${entry.latency_ms.toFixed(1)} ms`;
+        line.append(latency);
+      }
+      console.append(line);
     });
-    const console = this.shadowRoot.querySelector("pre");
-    console.textContent = lines.join("\n");
     console.scrollTop = console.scrollHeight;
   }
 }

@@ -55,8 +55,8 @@
         }
       },
       "groups": {
-        "title": "Slave {slave}: P404 outputs",
-        "description": "New P404 devices default to four independent dimmers. CCT uses the first register for brightness and the second for temperature.",
+        "title": "Slave {slave}: output modes",
+        "description": "Choose Group A and, for P404, Group B. CCT uses the first register for brightness and the second for temperature.",
         "data": {
           "group_a": "Group A: outputs 1 + 2",
           "group_b": "Group B: outputs 3 + 4"
@@ -117,8 +117,8 @@
         }
       },
       "groups": {
-        "title": "Slave {slave}: P404 outputs",
-        "description": "New P404 devices default to four independent dimmers. CCT uses the first register for brightness and the second for temperature.",
+        "title": "Slave {slave}: output modes",
+        "description": "Choose Group A and, for P404, Group B. CCT uses the first register for brightness and the second for temperature.",
         "data": {
           "group_a": "Group A: outputs 1 + 2",
           "group_b": "Group B: outputs 3 + 4"
