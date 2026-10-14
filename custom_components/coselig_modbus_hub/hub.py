@@ -10,6 +10,7 @@ from homeassistant.core import HomeAssistant
 from .coordinator import Coordinator
 from .models import Device
 from .scanner import scan
+from .trace import ProtocolTraceBuffer
 from .transport import GatewayError, Transport
 
 
@@ -27,7 +28,7 @@ class Hub:
         devices: tuple[Device, ...],
         interval: float,
     ) -> Hub:
-        transport = Transport(host, port)
+        transport = Transport(host, port, trace=ProtocolTraceBuffer())
         return cls(transport, Coordinator(hass, transport, devices, interval))
 
     async def start(self) -> None:

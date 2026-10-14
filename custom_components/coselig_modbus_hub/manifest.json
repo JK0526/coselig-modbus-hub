@@ -1,12 +1,15 @@
 {
   "domain": "coselig_modbus_hub",
   "name": "Coselig Modbus Hub",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "codeowners": [
     "@JK0526"
   ],
   "config_flow": true,
-  "dependencies": [],
+  "dependencies": [
+    "http",
+    "websocket_api"
+  ],
   "integration_type": "hub",
   "iot_class": "local_polling",
   "documentation": "https://github.com/JK0526/coselig-modbus-hub",

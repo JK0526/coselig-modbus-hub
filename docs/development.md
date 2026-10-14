@@ -1,4 +1,4 @@
-# v1.0 開發架構與驗證依據
+# v1.1 開發架構與驗證依據
 
 更新：2026-10-14。v1.0 取代 v0.2.x 的 MQTT／Panel／Channel 架構；歷史問題盤點保留於 `docs/specs/`，不作新版開發規範。
 
@@ -16,6 +16,8 @@
 | `config_flow.py` | Gateway／進度掃描／型號／Group、Options、Reconfigure |
 | `__init__.py` | typed `ConfigEntry[Hub].runtime_data`、啟動 retry、平台／關機清理、registry 差異移除 |
 | `diagnostics.py` | 小型 runtime 快照、固定 Host 遮罩、不持久化 |
+
+新增 `trace.py` 為200筆記憶體旁路，`monitor.py／monitor.js` 只有管理員唯讀 WS 與 HEX console。正式部署新增 http／websocket_api dependencies，沒有 MQTT。
 
 唯一正式核心位於 `custom_components/coselig_modbus_hub/`。沒有額外抽象基底、外部 packet library、第二套 runtime、自訂 registry 或 MQTT dependency。
 
@@ -39,7 +41,7 @@ TCP 連線錯誤與 Slave transaction timeout 分開分類。`TimeoutError` 繼�
 
 setup 時依最新 profiles 列出有效 unique_id，只刪除同 Entry／本 integration 不再使用的輸出。存續 entity registry 項目完全不更新 user name。移除 Device 僅使用 HA 2026.10 的 `async_remove_device` API。
 
-Options 使用 `OptionsFlowWithReload`；Reconfigure 使用 `async_update_reload_and_abort`。無手動 options update listener／第二次 reload。新 Host 先通過 TCP，才修改 Entry，Entry ID 與 registry 身份保持不變。
+Options profiles 使用 `OptionsFlowWithReload`；polling step 設 `automatic_reload=False` 並直接更新 runtime／喚醒 scheduler，無 options update listener。Reconfigure 使用 `async_update_reload_and_abort`。無手動 options update listener／第二次 reload。新 Host 先通過 TCP，才修改 Entry，Entry ID 與 registry 身份保持不變。
 
 HA unload 先確認平台卸載成功，再停止 Hub；失敗保留 runtime。關機事件同樣停止 Coordinator／worker 與 socket。掃描流由 native progress task 取消生命週期與 `async_remove()` 釋放資源。
 
@@ -49,7 +51,7 @@ HA unload 先確認平台卸載成功，再停止 Hub；失敗保留 runtime。�
 
 涵蓋：protocol、transport／priority／latest-wins／capacity／取消／重連、scanner／合法回覆／自訂範圍、profiles／register 不重疊、Coordinator／backoff／no backlog／failure isolation、Native Light／optimistic／CCT、完整 native Config／Options／Reconfigure manager、實際 HA platform service、Device／Entity registry／Group 差異、Diagnostics／redaction、setup／unload／關機清理。
 
-CI 使用 `pytest --cov-branch`，整體最低 90%；`config_flow.py` 行與分支要求 100%。涵蓋率報告由 `coverage.json` 產生，不將環境、fixture 或歷史文件計入產品 coverage。
+CI 使用 `pytest --cov-branch`，整體最低 99%；`config_flow.py` 行與分支要求 100%。涵蓋率報告由 `coverage.json` 產生，不將環境、fixture 或歷史文件計入產品 coverage。
 
 ## 官方 API 依據
 
@@ -65,3 +67,13 @@ CI 使用 `pytest --cov-branch`，整體最低 90%；`config_flow.py` 行與分�
 - [HACS integration repository](https://www.hacs.xyz/docs/publish/integration/)
 
 這些來源確認 HA／HACS API，**不證明 Coselig 特有 register、高 byte、CCT 接線或 Gateway timeout 特性**。實機仍依 [驗收 Checklist](v1.0-acceptance.md) 留存結果。
+
+## v1.1 行為
+
+TCP 成功後先顯示範圍，首次1～247；按開始搜尋才建立progress task。初次搜尋結果必須明確勾選Slave，再指定型號／Group。既有保存範圍不改寫。取消不保存未完成的範圍，也不關閉已載入Hub。
+
+Polling=0 只讓背景scheduler等待Event，既有狀態／failure保留，寫入與scan不受停輪詢影響。0→非零立即喚醒、讀取真實狀態。起動時仍有單次bootstrap read；paused reconnect不發FC03，只恢復已確認且failure<3的可用性。
+
+20輪時間deque只量測bus round，不含lock等待／下一輪sleep；不自動調interval或降頻Slave。原生Entity Registry的area_id完全由HA與使用者管理，不加入area欄位或多個Device。
+
+Monitor訂閱每0.5秒讀取ring快照，只在變更時推送；無Modbus I/O。訂閱取消／WS斷線清timer。UI paused只凍結顯示，最新快照仍有200筆上限。所有WS命令要求admin，只提供list／subscribe／clear，沒有任何register或設定寫入。Trace例外隔離；完整RX記錄在原CRC驗證前，結果之後另記OK／ERROR及latency。

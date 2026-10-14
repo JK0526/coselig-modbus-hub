@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable
 
+from .const import DEFAULT_SCAN_END, DEFAULT_SCAN_START
 from .protocol import ProtocolError, read
 from .transport import Transport
 
@@ -13,8 +14,8 @@ _LOGGER = logging.getLogger(__name__)
 
 async def scan(
     transport: Transport,
-    start: int = 1,
-    end: int = 32,
+    start: int = DEFAULT_SCAN_START,
+    end: int = DEFAULT_SCAN_END,
     progress: Callable[[int, int, int], None] | None = None,
 ) -> list[int]:
     if type(start) is not int or type(end) is not int or not 1 <= start <= end <= 247:

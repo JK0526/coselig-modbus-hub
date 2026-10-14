@@ -119,7 +119,7 @@ async def test_loop_reconnect_reset_and_immediate_poll(coordinator):
     rounds = 0
     delays = []
 
-    async def poll():
+    async def poll(*, background=False):
         nonlocal rounds
         rounds += 1
         assert coordinator.gateway_available
@@ -155,7 +155,7 @@ async def test_long_round_no_backlog(coordinator):
     delays = []
     real_loop = asyncio.get_running_loop()
 
-    async def poll():
+    async def poll(*, background=False):
         nonlocal now, rounds
         rounds += 1
         now += 3
@@ -179,7 +179,7 @@ async def test_long_round_no_backlog(coordinator):
 
 
 async def test_loop_gateway_failure_no_poll_sleep(coordinator):
-    async def poll():
+    async def poll(*, background=False):
         coordinator.gateway_lost()
         coordinator._closed = True
 

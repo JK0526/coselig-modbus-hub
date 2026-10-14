@@ -13,7 +13,14 @@ from homeassistant.config_entries import ConfigFlowResult
 from homeassistant.core import callback
 from homeassistant.helpers import selector
 
-from .const import DEFAULT_POLL_INTERVAL, DEFAULT_PORT, DOMAIN
+from .const import (
+    DEFAULT_POLL_INTERVAL,
+    DEFAULT_PORT,
+    DEFAULT_SCAN_END,
+    DEFAULT_SCAN_START,
+    DOMAIN,
+)
+from .coordinator import valid_poll_interval
 from .models import Device, GroupMode, Model, devices_from_options
 from .scanner import scan
 from .transport import GatewayError, Transport
@@ -77,8 +84,8 @@ class ProfileFlow:
         self._gateway: dict[str, Any] = {}
         self._options: dict[str, Any] = {
             "poll_interval": DEFAULT_POLL_INTERVAL,
-            "scan_start": 1,
-            "scan_end": 32,
+            "scan_start": DEFAULT_SCAN_START,
+            "scan_end": DEFAULT_SCAN_END,
         }
         self._existing: dict[int, Device] = {}
         self._found: list[int] = []
@@ -87,7 +94,11 @@ class ProfileFlow:
         self._index = 0
         self._group_index = 0
         self._scan_task: asyncio.Task[list[int]] | None = None
-        self._progress = {"current": "0", "total": "32", "found": "0"}
+        self._progress = {
+            "current": "0",
+            "total": str(DEFAULT_SCAN_END - DEFAULT_SCAN_START + 1),
+            "found": "0",
+        }
         self._scan_error = False
 
     def _scan_progress(self, current: int, total: int, found: int) -> None:
@@ -158,7 +169,7 @@ class ProfileFlow:
     async def async_step_rescan(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
-        return await self.async_step_scan()
+        return await self.async_step_scan_range()
 
     async def async_step_scan_range(
         self, user_input: dict[str, Any] | None = None
@@ -178,7 +189,7 @@ class ProfileFlow:
         schema = vol.Schema(
             {
                 vol.Required(key, default=self._options[key]): vol.All(
-                    vol.Coerce(int), vol.Range(min=1, max=247)
+                    int, vol.Range(min=1, max=247)
                 )
                 for key in ("scan_start", "scan_end")
             }
@@ -190,9 +201,7 @@ class ProfileFlow:
     async def async_step_scan_result(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
-        if not self._existing and not isinstance(self, CoseligOptionsFlow):
-            self._selected = self._found
-            return await self._start_profiles()
+        errors = {}
         choices = []
         for slave in sorted(set(self._existing) | set(self._found)):
             existing = self._existing.get(slave)
@@ -211,9 +220,12 @@ class ProfileFlow:
             )
         if user_input is not None:
             self._selected = sorted(int(value) for value in user_input["devices"])
-            return await self._start_profiles()
+            if self._selected or isinstance(self, CoseligOptionsFlow):
+                return await self._start_profiles()
+            errors["devices"] = "no_devices"
         return self.async_show_form(
             step_id="scan_result",
+            errors=errors,
             data_schema=vol.Schema(
                 {
                     vol.Required(
@@ -328,7 +340,7 @@ class ConfigFlow(ProfileFlow, config_entries.ConfigFlow, domain=DOMAIN):
                 errors["base"] = "cannot_connect"
             else:
                 self._async_abort_entries_match(self._gateway)
-                return await self.async_step_scan()
+                return await self.async_step_scan_range()
         return self.async_show_form(
             step_id="user", data_schema=gateway_schema(user_input or {}), errors=errors
         )
@@ -390,16 +402,35 @@ class CoseligOptionsFlow(ProfileFlow, config_entries.OptionsFlowWithReload):
     async def async_step_polling(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
+        errors = {}
         if user_input is not None:
-            self._options.update(user_input)
-            return self.async_create_entry(data=self._options)
+            interval = float(user_input["poll_interval"])
+            if not valid_poll_interval(interval):
+                errors["poll_interval"] = "invalid_poll_interval"
+            else:
+                self._options["poll_interval"] = interval
+                # Profile changes still use automatic reload. A timing change never does.
+                self.automatic_reload = False
+                if hasattr(self.config_entry, "runtime_data"):
+                    self.config_entry.runtime_data.coordinator.set_poll_interval(
+                        interval
+                    )
+                return self.async_create_entry(data=self._options)
         return self.async_show_form(
             step_id="polling",
+            errors=errors,
             data_schema=vol.Schema(
                 {
                     vol.Required(
                         "poll_interval", default=self._options["poll_interval"]
-                    ): vol.All(vol.Coerce(float), vol.Range(min=0.5, max=3600))
+                    ): selector.NumberSelector(
+                        selector.NumberSelectorConfig(
+                            min=0,
+                            max=3600,
+                            step=0.5,
+                            mode=selector.NumberSelectorMode.BOX,
+                        )
+                    )
                 }
             ),
         )

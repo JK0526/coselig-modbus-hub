@@ -4,7 +4,7 @@
     "step": {
       "user": {
         "title": "TCP gateway",
-        "description": "Enter the gateway IP or hostname. The TCP connection will be tested before scanning.",
+        "description": "Enter gateway IP or hostname. After TCP validation choose the scan range; scanning never starts automatically.",
         "data": {
           "host": "IP / Host",
           "port": "Port"
@@ -32,12 +32,13 @@
         }
       },
       "scan_range": {
-        "title": "Scan range",
-        "description": "Slave IDs 1–247. Polling is paused while scanning.",
+        "title": "Search Modbus devices",
+        "description": "Choose slave IDs 1–247, then Start search. A smaller range is faster. Rescan defaults to the last completed range.",
         "data": {
           "scan_start": "Start slave",
           "scan_end": "End slave"
-        }
+        },
+        "submit": "Start search"
       },
       "scan_result": {
         "title": "Manage devices",
@@ -65,7 +66,9 @@
     "error": {
       "invalid_host": "Enter a valid IP or hostname.",
       "cannot_connect": "Cannot connect to gateway. Check the address, port and power.",
-      "invalid_range": "Start must not exceed end."
+      "invalid_range": "Start must not exceed end.",
+      "invalid_poll_interval": "Interval must be 0 or at least 0.5 seconds.",
+      "no_devices": "Choose at least one device to add, or cancel setup."
     },
     "abort": {
       "already_configured": "This gateway is already configured.",
@@ -91,12 +94,13 @@
         }
       },
       "scan_range": {
-        "title": "Scan range",
-        "description": "Slave IDs 1–247. Polling is paused while scanning.",
+        "title": "Search Modbus devices",
+        "description": "Choose slave IDs 1–247, then Start search. A smaller range is faster. Rescan defaults to the last completed range.",
         "data": {
           "scan_start": "Start slave",
           "scan_end": "End slave"
-        }
+        },
+        "submit": "Start search"
       },
       "scan_result": {
         "title": "Manage devices",
@@ -130,7 +134,7 @@
       },
       "polling": {
         "title": "Polling interval",
-        "description": "Target cycle in seconds (minimum 0.5). Slow rounds never accumulate.",
+        "description": "Set 0 to pause background polling. Control and scanning still work. Other values must be >=0.5 seconds. Applies immediately without reload.",
         "data": {
           "poll_interval": "Polling interval (seconds)"
         }
@@ -139,7 +143,9 @@
     "error": {
       "invalid_host": "Enter a valid IP or hostname.",
       "cannot_connect": "Cannot connect to gateway. Check the address, port and power.",
-      "invalid_range": "Start must not exceed end."
+      "invalid_range": "Start must not exceed end.",
+      "invalid_poll_interval": "Interval must be 0 or at least 0.5 seconds.",
+      "no_devices": "Choose at least one device to add, or cancel setup."
     },
     "abort": {
       "already_configured": "This gateway is already configured.",

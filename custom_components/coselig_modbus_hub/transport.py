@@ -10,7 +10,8 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass
 
 from .const import CONTROL_CAPACITY, DEFAULT_TIMEOUT
-from .protocol import CRCError, DeviceException, receive, validate
+from .protocol import CRCError, DeviceException, ProtocolError, receive, validate
+from .trace import ProtocolTraceBuffer
 
 _LOGGER = logging.getLogger(__name__)
 CommandKey = tuple[int, str, str]
@@ -38,6 +39,7 @@ class Statistics:
 class Pending:
     request: bytes
     future: asyncio.Future[bytes | None]
+    source: str
 
 
 class Transport:
@@ -49,6 +51,7 @@ class Transport:
         port: int,
         timeout: float = DEFAULT_TIMEOUT,
         capacity: int = CONTROL_CAPACITY,
+        trace: ProtocolTraceBuffer | None = None,
     ) -> None:
         if not host or not 1 <= port <= 65535 or timeout <= 0 or capacity < 1:
             raise ValueError("Invalid transport configuration")
@@ -59,6 +62,7 @@ class Transport:
             capacity,
         )
         self.statistics = Statistics()
+        self.trace = trace
         self._controls: OrderedDict[CommandKey, Pending] = OrderedDict()
         self._polls: deque[Pending] = deque()
         self._reader: asyncio.StreamReader | None = None
@@ -122,20 +126,21 @@ class Transport:
         key: CommandKey | None = None,
         exclusive: bool = False,
     ) -> bytes | None:
+        source = "scan" if exclusive else "poll" if poll else "control"
         if exclusive:
-            future = self._enqueue(request, poll, key)
+            future = self._enqueue(request, poll, key, source)
         else:
             async with self._gate:
-                future = self._enqueue(request, poll, key)
+                future = self._enqueue(request, poll, key, source)
         return await future
 
     def _enqueue(
-        self, request: bytes, poll: bool, key: CommandKey | None
+        self, request: bytes, poll: bool, key: CommandKey | None, source: str
     ) -> asyncio.Future[bytes | None]:
         if self._closed:
             raise OfflineError("Transport closed")
         future = asyncio.get_running_loop().create_future()
-        item = Pending(request, future)
+        item = Pending(request, future, source)
         if poll:
             self._polls.append(item)
         else:
@@ -162,16 +167,58 @@ class Transport:
             await self._idle.wait()
             yield
 
-    async def _exchange(self, request: bytes) -> bytes:
+    def _trace(
+        self,
+        direction: str,
+        raw: bytes = b"",
+        *,
+        source: str,
+        latency_ms: float | None = None,
+    ) -> None:
+        if self.trace is not None:
+            try:
+                self.trace.record(direction, raw, source=source, latency_ms=latency_ms)
+            except Exception:
+                # Observation must never turn a valid exchange into a failed one.
+                _LOGGER.debug("Modbus trace observation failed", exc_info=True)
+
+    async def _exchange(self, request: bytes, source: str) -> bytes:
         await self.connect()
+        started = asyncio.get_running_loop().time()
+        self._trace("TX", request, source=source)
         try:
             async with asyncio.timeout(self.timeout):
                 self._writer.write(request)
                 await self._writer.drain()
-                return validate(request, await receive(self._reader))
+                response = await receive(self._reader)
+                self._trace("RX", response, source=source)
+                result = validate(request, response)
+            self._trace(
+                "OK",
+                source=source,
+                latency_ms=(asyncio.get_running_loop().time() - started) * 1000,
+            )
+            return result
         except TimeoutError:
+            self._trace(
+                "TIMEOUT",
+                source=source,
+                latency_ms=(asyncio.get_running_loop().time() - started) * 1000,
+            )
+            raise
+        except ProtocolError as error:
+            self._trace(
+                "CRC ERROR" if isinstance(error, CRCError) else "ERROR",
+                source=source,
+                latency_ms=(asyncio.get_running_loop().time() - started) * 1000,
+            )
             raise
         except (OSError, asyncio.IncompleteReadError) as error:
+            self._trace(
+                "ERROR",
+                source=source,
+                latency_ms=(asyncio.get_running_loop().time() - started) * 1000,
+            )
             raise GatewayError("Gateway connection lost") from error
 
     async def _run(self) -> None:
@@ -188,7 +235,7 @@ class Transport:
             try:
                 if item.future.cancelled():
                     continue
-                result = await self._exchange(item.request)
+                result = await self._exchange(item.request, item.source)
                 self.statistics.successful_requests += 1
                 if not item.future.done():
                     item.future.set_result(result)

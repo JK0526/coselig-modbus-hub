@@ -25,6 +25,14 @@ async def async_get_config_entry_diagnostics(
         },
         "coordinator": {
             "poll_interval": coordinator.poll_interval,
+            "polling_paused": coordinator.polling_paused,
+            "configured_slaves": len(coordinator.devices),
+            "available_slaves": sum(
+                coordinator.gateway_available and state.available
+                for state in coordinator.states.values()
+            ),
+            "last_poll_round_ms": round(coordinator.last_poll_round_ms, 3),
+            "average_poll_round_ms": round(coordinator.average_poll_round_ms, 3),
             "queue_depth": transport.queue_depth,
             "queue_peak": transport.statistics.queue_peak,
         },

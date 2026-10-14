@@ -94,6 +94,9 @@ async def test_user_error_retry_and_progress(flow):
         patch("custom_components.coselig_modbus_hub.config_flow.scan", new=scan),
     ):
         result = await flow.async_step_user({"host": "test", "port": 502})
+        assert result["step_id"] == "scan_range"
+        assert flow._scan_task is None
+        result = await flow.async_step_scan_range({"scan_start": 1, "scan_end": 247})
         assert result["type"] == FlowResultType.SHOW_PROGRESS
         assert (await flow.async_step_scan())["progress_task"] is flow._scan_task
         flow._scan_progress(2, 32, 1)
@@ -101,7 +104,8 @@ async def test_user_error_retry_and_progress(flow):
         release.set()
         await flow._scan_task
         assert (await flow.async_step_scan())["step_id"] == "scan_result"
-    result = await flow.async_step_scan_result()
+    assert (await flow.async_step_scan_result())["step_id"] == "scan_result"
+    result = await flow.async_step_scan_result({"devices": ["1", "3"]})
     assert result["step_id"] == "model"
     assert result["description_placeholders"]["slave"] == "01"
     assert (await flow.async_step_model({"model": "p404"}))["step_id"] == "model"
@@ -133,10 +137,12 @@ async def test_empty_or_disconnected_scan_retry(flow, failure):
         "custom_components.coselig_modbus_hub.config_flow.scan",
         new=AsyncMock(return_value=[7]),
     ):
-        await flow.async_step_rescan()
+        assert (await flow.async_step_rescan())["step_id"] == "scan_range"
+        assert flow._scan_task is None
+        await flow.async_step_scan_range({"scan_start": 1, "scan_end": 247})
         await flow._scan_task
         assert (await flow.async_step_scan())["step_id"] == "scan_result"
-    await flow.async_step_scan_result()
+    await flow.async_step_scan_result({"devices": ["7"]})
     result = await flow.async_step_model({"model": "p210"})
     assert result["type"] == FlowResultType.CREATE_ENTRY
     assert result["options"]["devices"] == [{"slave": 7, "model": "p210"}]
@@ -180,8 +186,9 @@ async def test_options_polling_only(options):
     ]
     form = await options.async_step_polling()
     assert form["data_schema"]({"poll_interval": 0.5})["poll_interval"] == 0.5
-    with pytest.raises(Exception):
-        form["data_schema"]({"poll_interval": 0.4})
+    assert (await options.async_step_polling({"poll_interval": 0.4}))["errors"] == {
+        "poll_interval": "invalid_poll_interval"
+    }
     result = await options.async_step_polling({"poll_interval": 1.0})
     assert result["data"]["poll_interval"] == 1
     assert len(result["data"]["devices"]) == 2
@@ -257,9 +264,17 @@ async def test_full_native_flow_manager(hass):
         result = await hass.config_entries.flow.async_configure(
             flow_id, {"host": "test", "port": 502}
         )
+        assert result["step_id"] == "scan_range"
+        result = await hass.config_entries.flow.async_configure(
+            flow_id, {"scan_start": 1, "scan_end": 247}
+        )
         assert result["type"] == FlowResultType.SHOW_PROGRESS
         await hass.async_block_till_done()
         result = await hass.config_entries.flow.async_configure(flow_id)
+        assert result["step_id"] == "scan_result"
+        result = await hass.config_entries.flow.async_configure(
+            flow_id, {"devices": ["1", "3"]}
+        )
         assert result["step_id"] == "model"
         result = await hass.config_entries.flow.async_configure(
             flow_id, {"model": "p404"}
@@ -296,6 +311,9 @@ async def test_native_cancel_closes_scan(hass):
         result = await hass.config_entries.flow.async_init(
             DOMAIN, context={"source": "user"}, data={"host": "test", "port": 502}
         )
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"], {"scan_start": 1, "scan_end": 247}
+        )
         await asyncio.sleep(0)
         hass.config_entries.flow.async_abort(result["flow_id"])
         await cancelled.wait()
@@ -329,7 +347,7 @@ async def test_native_options_manager(hass, entry):
         await hass.async_block_till_done()
     assert entry.options["poll_interval"] == 0.5
     assert len(entry.options["devices"]) == 2
-    reload.assert_awaited_once_with(entry.entry_id)
+    reload.assert_not_awaited()
 
 
 async def test_rescan_all_existing_missing_still_manageable(options):
@@ -377,3 +395,68 @@ async def test_forms_use_actual_ha_frontend_serializer(flow, options):
         result = options_view._prepare_result_json(form)
         assert result["data_schema"]
         json.dumps(result)
+
+
+@pytest.mark.parametrize("start,end", [(1, 247), (51, 80), (1, 10)])
+async def test_tcp_success_never_scans_until_range_submitted(flow, gateway, start, end):
+    with patch(
+        "custom_components.coselig_modbus_hub.config_flow.scan",
+        new=AsyncMock(return_value=[start]),
+    ) as scanner:
+        result = await flow.async_step_user({"host": "127.0.0.1", "port": gateway.port})
+        assert result["step_id"] == "scan_range"
+        assert result["data_schema"]({}) == {"scan_start": 1, "scan_end": 247}
+        await flow.hass.async_block_till_done()
+        scanner.assert_not_awaited()
+        assert gateway.requests == []
+        assert (await flow.async_step_scan_range())["step_id"] == "scan_range"
+        scanner.assert_not_awaited()
+        await flow.async_step_scan_range({"scan_start": start, "scan_end": end})
+        await flow._scan_task
+        scanner.assert_awaited_once()
+        assert scanner.call_args.args[1:3] == (start, end)
+        await flow.async_step_scan()
+        result = await flow.async_step_scan_result()
+        assert result["data_schema"]({})["devices"] == []
+        assert (await flow.async_step_scan_result({"devices": []}))["errors"] == {
+            "devices": "no_devices"
+        }
+        await flow.async_step_scan_result({"devices": [str(start)]})
+        result = await flow.async_step_model({"model": "p210"})
+        assert result["options"]["scan_start"] == start
+        assert result["options"]["scan_end"] == end
+
+
+@pytest.mark.parametrize(
+    "start,end", [(0, 10), (1, 248), (-1, 32), (248, 248), (1.5, 10), (1, 10.5)]
+)
+async def test_range_bounds_rejected_before_requests(flow, start, end):
+    schema = (await flow.async_step_scan_range())["data_schema"]
+    with pytest.raises(Exception):
+        schema({"scan_start": start, "scan_end": end})
+    assert flow._scan_task is None
+
+
+async def test_rescan_remembers_range_then_persists_new_range(options, entry, hass):
+    hass.config_entries.async_update_entry(
+        entry, options={**entry.options, "scan_start": 51, "scan_end": 80}
+    )
+    await options.async_step_init()
+    result = await options.async_step_rescan()
+    assert result["data_schema"]({}) == {"scan_start": 51, "scan_end": 80}
+    assert options._scan_task is None
+    with patch(
+        "custom_components.coselig_modbus_hub.config_flow.scan",
+        new=AsyncMock(return_value=[60]),
+    ) as scanner:
+        await options.async_step_scan_range({"scan_start": 60, "scan_end": 74})
+        await options._scan_task
+        assert scanner.call_args.args[1:3] == (60, 74)
+        await options.async_step_scan()
+    await options.async_step_scan_result({"devices": ["1", "3", "60"]})
+    await options.async_step_model({"model": "p404"})
+    await options.async_step_model({"model": "p210"})
+    await options.async_step_model({"model": "p210"})
+    result = await options.async_step_groups({"group_a": "single", "group_b": "single"})
+    assert result["data"]["scan_start"] == 60
+    assert result["data"]["scan_end"] == 74

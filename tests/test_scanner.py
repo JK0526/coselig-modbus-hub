@@ -29,8 +29,10 @@ async def test_default_range():
     with patch.object(
         transport, "submit", new=AsyncMock(return_value=b"valid")
     ) as submit:
-        assert await scan(transport) == list(range(1, 33))
-        assert [call.args[0][0] for call in submit.call_args_list] == list(range(1, 33))
+        assert await scan(transport) == list(range(1, 248))
+        assert [call.args[0][0] for call in submit.call_args_list] == list(
+            range(1, 248)
+        )
     await transport.close()
 
 

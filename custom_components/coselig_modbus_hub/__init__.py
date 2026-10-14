@@ -16,6 +16,14 @@ from .models import devices_from_options
 type CoseligConfigEntry = ConfigEntry[Hub]
 
 
+async def async_setup(hass: HomeAssistant, config: dict) -> bool:
+    """Register the optional read-only console once for this integration domain."""
+    from .monitor import async_register_monitor
+
+    await async_register_monitor(hass)
+    return True
+
+
 def prune_registries(hass: HomeAssistant, entry: CoseligConfigEntry) -> None:
     """Remove only obsolete integration outputs; keep surviving user metadata."""
     devices = devices_from_options(entry.options)

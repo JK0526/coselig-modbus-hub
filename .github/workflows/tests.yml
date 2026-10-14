@@ -1,4 +1,4 @@
-name: v1.0 tests
+name: v1.1 tests
 on:
   push:
   pull_request:
@@ -16,7 +16,8 @@ jobs:
       - run: uv sync --locked --python 3.14
       - run: uv run ruff check custom_components tests
       - run: uv run ruff format --check custom_components tests
-      - run: uv run pytest --timeout=30
+      - run: node --test tests/frontend/monitor.test.cjs
+      - run: uv run pytest --timeout=30 --cov-fail-under=99
       - name: Config flow coverage gate
         run: |
           uv run python - <<'PY'

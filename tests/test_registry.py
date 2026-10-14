@@ -116,3 +116,43 @@ async def test_reconfigure_registry_user_name_preserved(hass, entry):
     prune_registries(hass, entry)
     assert list(er.async_entries_for_config_entry(registry, entry.entry_id)) == before
     assert devices.async_get(device.id) == device
+
+
+async def test_native_entity_areas_survive_reload_rescan_and_options(
+    hass, entry, gateway
+):
+    from homeassistant.helpers import area_registry as ar
+
+    hass.config_entries.async_update_entry(
+        entry, data={"host": "127.0.0.1", "port": gateway.port}
+    )
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+    registry = er.async_get(hass)
+    entities = er.async_entries_for_config_entry(registry, entry.entry_id)
+    affected = [entity for entity in entities if "_slave_1_" in entity.unique_id]
+    rooms = ar.async_get(hass)
+    areas = [rooms.async_create(name) for name in ["客廳", "餐廳", "玄關", "廚房"]]
+    for entity, area in zip(affected, areas, strict=True):
+        registry.async_update_entity(
+            entity.entity_id, area_id=area.id, name="自訂 " + area.name
+        )
+    device = dr.async_get(hass).async_get(affected[0].device_id)
+    assert device.area_id is None
+    await hass.async_block_till_done()
+    assert await hass.config_entries.async_reload(entry.entry_id)
+    await hass.async_block_till_done()
+    await entry.runtime_data.scan(1, 3)
+    result = await hass.config_entries.options.async_init(entry.entry_id)
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], {"next_step_id": "polling"}
+    )
+    await hass.config_entries.options.async_configure(
+        result["flow_id"], {"poll_interval": 0}
+    )
+    await hass.async_block_till_done()
+    for entity, area in zip(affected, areas, strict=True):
+        saved = registry.async_get(entity.entity_id)
+        assert saved.area_id == area.id
+        assert saved.name == "自訂 " + area.name
+    assert await hass.config_entries.async_unload(entry.entry_id)
