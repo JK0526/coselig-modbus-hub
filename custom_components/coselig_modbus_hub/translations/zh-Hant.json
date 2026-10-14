@@ -1,31 +1,152 @@
 {
+  "title": "Coselig Modbus Hub",
   "config": {
     "step": {
       "user": {
-        "title": "設定 Coselig Modbus Hub",
-        "description": "輸入 RTU over TCP 閘道器設定。",
+        "title": "TCP 閘道器",
+        "description": "輸入閘道器 IP 或主機名稱。會先測試 TCP 連線，再自動掃描設備。",
         "data": {
-          "host": "TCP 位址",
-          "port": "TCP 連接埠",
-          "timeout": "回覆逾時（秒）",
-          "polling_enabled": "啟用輪詢",
-          "poll_interval": "輪詢間隔（秒）"
-        },
-        "error": {
-          "invalid_host": "請輸入有效的 IP 位址或主機名稱。"
+          "host": "IP／主機名稱",
+          "port": "連接埠"
+        }
+      },
+      "reconfigure": {
+        "title": "變更 TCP 閘道器",
+        "description": "新 TCP 連線成功後才儲存設定。設備與實體身份保持不變。",
+        "data": {
+          "host": "IP／主機名稱",
+          "port": "連接埠"
+        }
+      },
+      "scan": {
+        "title": "正在掃描設備",
+        "description": "已掃描 {current}/{total}；目前找到 {found} 個設備。"
+      },
+      "scan_failed": {
+        "title": "未找到設備或掃描中斷",
+        "description": "請確認閘道器電源、RS485 接線與 Slave 位址，然後重試或變更範圍。",
+        "menu_options": {
+          "rescan": "重新掃描",
+          "scan_range": "變更掃描範圍",
+          "cancel": "取消"
+        }
+      },
+      "scan_range": {
+        "title": "掃描範圍",
+        "description": "允許 Slave ID 1～247。掃描期間會暫停輪詢與控制。",
+        "data": {
+          "scan_start": "起始 Slave",
+          "scan_end": "結束 Slave"
+        }
+      },
+      "scan_result": {
+        "title": "管理設備",
+        "description": "既有設備（含 Missing）預設保留。勾選 New 加入，取消勾選則移除設備。未掃到的設備不會自動刪除。",
+        "data": {
+          "devices": "保留的設備"
+        }
+      },
+      "model": {
+        "title": "Slave {slave}：型號",
+        "description": "請選擇實際設備型號。掃描只確認 Slave 回應，不辨識型號。",
+        "data": {
+          "model": "設備型號"
+        }
+      },
+      "groups": {
+        "title": "Slave {slave}：P404 輸出模式",
+        "description": "新 P404 預設為四路獨立調光。CCT 沿用第一個 register 控制亮度、第二個控制色溫的協議。",
+        "data": {
+          "group_a": "Group A：輸出 1＋2",
+          "group_b": "Group B：輸出 3＋4"
         }
       }
+    },
+    "error": {
+      "invalid_host": "請輸入有效的 IP 或主機名稱。",
+      "cannot_connect": "無法連線閘道器，請檢查位址、連接埠與電源。",
+      "invalid_range": "起始 Slave 不可大於結束 Slave。"
+    },
+    "abort": {
+      "already_configured": "此閘道器已設定。",
+      "user_cancelled": "已取消，設定未儲存。"
+    },
+    "progress": {
+      "scan": "正在掃描 {current}/{total}；目前找到 {found} 個設備。"
     }
   },
   "options": {
     "step": {
-      "init": {
-        "title": "Coselig Modbus Hub 選項",
+      "scan": {
+        "title": "正在掃描設備",
+        "description": "已掃描 {current}/{total}；目前找到 {found} 個設備。"
+      },
+      "scan_failed": {
+        "title": "未找到設備或掃描中斷",
+        "description": "請確認閘道器電源、RS485 接線與 Slave 位址，然後重試或變更範圍。",
+        "menu_options": {
+          "rescan": "重新掃描",
+          "scan_range": "變更掃描範圍",
+          "cancel": "取消"
+        }
+      },
+      "scan_range": {
+        "title": "掃描範圍",
+        "description": "允許 Slave ID 1～247。掃描期間會暫停輪詢與控制。",
         "data": {
-          "polling_enabled": "啟用輪詢",
-          "poll_interval": "輪詢間隔（秒）"
+          "scan_start": "起始 Slave",
+          "scan_end": "結束 Slave"
+        }
+      },
+      "scan_result": {
+        "title": "管理設備",
+        "description": "既有設備（含 Missing）預設保留。勾選 New 加入，取消勾選則移除設備。未掃到的設備不會自動刪除。",
+        "data": {
+          "devices": "保留的設備"
+        }
+      },
+      "model": {
+        "title": "Slave {slave}：型號",
+        "description": "請選擇實際設備型號。掃描只確認 Slave 回應，不辨識型號。",
+        "data": {
+          "model": "設備型號"
+        }
+      },
+      "groups": {
+        "title": "Slave {slave}：P404 輸出模式",
+        "description": "新 P404 預設為四路獨立調光。CCT 沿用第一個 register 控制亮度、第二個控制色溫的協議。",
+        "data": {
+          "group_a": "Group A：輸出 1＋2",
+          "group_b": "Group B：輸出 3＋4"
+        }
+      },
+      "init": {
+        "title": "Coselig 選項",
+        "menu_options": {
+          "polling": "輪詢週期",
+          "manage_devices": "管理設備／輸出模式",
+          "scan_range": "重新掃描設備"
+        }
+      },
+      "polling": {
+        "title": "輪詢週期",
+        "description": "目標輪詢週期（秒），最低 0.5。輪詢超過目標時間時不會累積下一輪。",
+        "data": {
+          "poll_interval": "輪詢週期（秒）"
         }
       }
+    },
+    "error": {
+      "invalid_host": "請輸入有效的 IP 或主機名稱。",
+      "cannot_connect": "無法連線閘道器，請檢查位址、連接埠與電源。",
+      "invalid_range": "起始 Slave 不可大於結束 Slave。"
+    },
+    "abort": {
+      "already_configured": "此閘道器已設定。",
+      "user_cancelled": "已取消，設定未儲存。"
+    },
+    "progress": {
+      "scan": "正在掃描 {current}/{total}；目前找到 {found} 個設備。"
     }
   }
 }

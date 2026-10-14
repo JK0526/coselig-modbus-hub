@@ -2,3 +2,9 @@ __pycache__/
 *.pyc
 .venv/
 .DS_Store
+.bootstrap/
+.pytest_cache/
+.coverage
+coverage.json
+htmlcov/
+.ruff_cache/

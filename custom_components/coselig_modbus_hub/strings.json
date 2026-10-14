@@ -1,31 +1,152 @@
 {
+  "title": "Coselig Modbus Hub",
   "config": {
     "step": {
       "user": {
-        "title": "設定 Coselig Modbus Hub",
-        "description": "輸入 RTU over TCP 閘道器設定。",
+        "title": "TCP gateway",
+        "description": "Enter the gateway IP or hostname. The TCP connection will be tested before scanning.",
         "data": {
-          "host": "TCP 位址",
-          "port": "TCP 連接埠",
-          "timeout": "回覆逾時（秒）",
-          "polling_enabled": "啟用輪詢",
-          "poll_interval": "輪詢間隔（秒）"
-        },
-        "error": {
-          "invalid_host": "請輸入有效的 IP 位址或主機名稱。"
+          "host": "IP / Host",
+          "port": "Port"
+        }
+      },
+      "reconfigure": {
+        "title": "Change TCP gateway",
+        "description": "Settings are saved only after the new TCP connection succeeds. Device and entity identities are retained.",
+        "data": {
+          "host": "IP / Host",
+          "port": "Port"
+        }
+      },
+      "scan": {
+        "title": "Scanning slaves",
+        "description": "Checked {current}/{total}; found {found} devices."
+      },
+      "scan_failed": {
+        "title": "Scan did not complete with devices",
+        "description": "Check gateway power, wiring and slave addresses, then retry or change range.",
+        "menu_options": {
+          "rescan": "Scan again",
+          "scan_range": "Change scan range",
+          "cancel": "Cancel"
+        }
+      },
+      "scan_range": {
+        "title": "Scan range",
+        "description": "Slave IDs 1–247. Polling is paused while scanning.",
+        "data": {
+          "scan_start": "Start slave",
+          "scan_end": "End slave"
+        }
+      },
+      "scan_result": {
+        "title": "Manage devices",
+        "description": "Existing devices stay selected, including Missing devices. Select New devices to add; deselect devices to remove. Missing devices are never removed automatically.",
+        "data": {
+          "devices": "Devices to keep"
+        }
+      },
+      "model": {
+        "title": "Slave {slave}: model",
+        "description": "Select the physical model. Scanning does not identify models.",
+        "data": {
+          "model": "Device model"
+        }
+      },
+      "groups": {
+        "title": "Slave {slave}: P404 outputs",
+        "description": "New P404 devices default to four independent dimmers. CCT uses the first register for brightness and the second for temperature.",
+        "data": {
+          "group_a": "Group A: outputs 1 + 2",
+          "group_b": "Group B: outputs 3 + 4"
         }
       }
+    },
+    "error": {
+      "invalid_host": "Enter a valid IP or hostname.",
+      "cannot_connect": "Cannot connect to gateway. Check the address, port and power.",
+      "invalid_range": "Start must not exceed end."
+    },
+    "abort": {
+      "already_configured": "This gateway is already configured.",
+      "user_cancelled": "Setup cancelled. No changes saved."
+    },
+    "progress": {
+      "scan": "Scanning {current}/{total}; found {found} devices."
     }
   },
   "options": {
     "step": {
-      "init": {
-        "title": "Coselig Modbus Hub 選項",
+      "scan": {
+        "title": "Scanning slaves",
+        "description": "Checked {current}/{total}; found {found} devices."
+      },
+      "scan_failed": {
+        "title": "Scan did not complete with devices",
+        "description": "Check gateway power, wiring and slave addresses, then retry or change range.",
+        "menu_options": {
+          "rescan": "Scan again",
+          "scan_range": "Change scan range",
+          "cancel": "Cancel"
+        }
+      },
+      "scan_range": {
+        "title": "Scan range",
+        "description": "Slave IDs 1–247. Polling is paused while scanning.",
         "data": {
-          "polling_enabled": "啟用輪詢",
-          "poll_interval": "輪詢間隔（秒）"
+          "scan_start": "Start slave",
+          "scan_end": "End slave"
+        }
+      },
+      "scan_result": {
+        "title": "Manage devices",
+        "description": "Existing devices stay selected, including Missing devices. Select New devices to add; deselect devices to remove. Missing devices are never removed automatically.",
+        "data": {
+          "devices": "Devices to keep"
+        }
+      },
+      "model": {
+        "title": "Slave {slave}: model",
+        "description": "Select the physical model. Scanning does not identify models.",
+        "data": {
+          "model": "Device model"
+        }
+      },
+      "groups": {
+        "title": "Slave {slave}: P404 outputs",
+        "description": "New P404 devices default to four independent dimmers. CCT uses the first register for brightness and the second for temperature.",
+        "data": {
+          "group_a": "Group A: outputs 1 + 2",
+          "group_b": "Group B: outputs 3 + 4"
+        }
+      },
+      "init": {
+        "title": "Coselig options",
+        "menu_options": {
+          "polling": "Polling interval",
+          "manage_devices": "Manage devices / output modes",
+          "scan_range": "Rescan devices"
+        }
+      },
+      "polling": {
+        "title": "Polling interval",
+        "description": "Target cycle in seconds (minimum 0.5). Slow rounds never accumulate.",
+        "data": {
+          "poll_interval": "Polling interval (seconds)"
         }
       }
+    },
+    "error": {
+      "invalid_host": "Enter a valid IP or hostname.",
+      "cannot_connect": "Cannot connect to gateway. Check the address, port and power.",
+      "invalid_range": "Start must not exceed end."
+    },
+    "abort": {
+      "already_configured": "This gateway is already configured.",
+      "user_cancelled": "Setup cancelled. No changes saved."
+    },
+    "progress": {
+      "scan": "Scanning {current}/{total}; found {found} devices."
     }
   }
 }

@@ -1,51 +1,67 @@
-# 開發決策與前置工作 — 2026-09-08
+# v1.0 開發架構與驗證依據
 
-## 本次範圍
+更新：2026-10-14。v1.0 取代 v0.2.x 的 MQTT／Panel／Channel 架構；歷史問題盤點保留於 `docs/specs/`，不作新版開發規範。
 
-使用者已授權直接實作。先完成可離線驗證的核心，不以候選規格冒充實機事實。
-產品目標為 HACS 自訂整合、MQTT bridge、設備管理面板；核心應可獨立測試，避免與 HA UI 耦合。
+## 模組與責任
 
-## 已完成（截至 2026-09-08）
+| 模組 | 責任 |
+| --- | --- |
+| `models.py` | 嚴格 Device／Model／GroupMode、輸出占用、身份、亮度與色溫轉換 |
+| `protocol.py` | CRC16、0x03／0x06、例外回覆、完整 echo、拆包與單一 ADU 讀取 |
+| `transport.py` | 一個 socket／worker、單筆在途、控制優先、bounded latest-wins、交易統計 |
+| `scanner.py` | 獨佔 bus、最小共同 0x03 probe、合法回覆才列 Slave；無型號判斷 |
+| `coordinator.py` | 單循環目標週期、逐 Slave 輪詢、真實 cache、可用性與重連退避、HA listener |
+| `hub.py` | 組合 Transport／Coordinator，管理啟停與暫停輪詢的掃描 |
+| `light.py` | 原生燈光、立即 optimistic 更新、正常 poll 校正、Kelvin color mode |
+| `config_flow.py` | Gateway／進度掃描／型號／Group、Options、Reconfigure |
+| `__init__.py` | typed `ConfigEntry[Hub].runtime_data`、啟動 retry、平台／關機清理、registry 差異移除 |
+| `diagnostics.py` | 小型 runtime 快照、固定 Host 遮罩、不持久化 |
 
-- 可獨立部署的 `custom_components/coselig_modbus_hub` 骨架與 Config Flow／Options Flow。
-- RTU over TCP 0x03／0x06、CRC、回覆配對、拆包、控制優先佇列與逾時重連。
-- 可自行建立的通道資料驗證，以及 MQTT Discovery／availability topic 產生器。
-- HA MQTT adapter：有通道設定時才啟動，發布 retained Discovery，並把控制 topic 路由到 runtime。
-- Admin WebSocket API 與側邊欄面板：通道 CRUD、輪詢設定與狀態摘要。
-- 14 項本機測試通過；未連線任何現場 gateway，也未發布現場 MQTT。
+唯一正式核心位於 `custom_components/coselig_modbus_hub/`。沒有額外抽象基底、外部 packet library、第二套 runtime、自訂 registry 或 MQTT dependency。
 
-## 已採用的開發規格
+## 資料與交易
 
-- 依 flow 使用帶 CRC 的 RTU over TCP；單一在途 request。
-- P404 讀 4 registers、P210 讀 2、U4 暫依 flow 讀 4 且僅支援 Single 1。
-- 起點 0x082A；寫入高 byte 保留 0x05，不對外宣稱是已確認調光速度。
-- 色溫依通道設定；每個 Hub 使用獨立的 topic 與 unique ID。
-- 第一版預計沿用 HA 的 MQTT 整合；broker 帳密不複製到本專案。
-- 3 秒為輪詢目標週期；完成不了時不能堆積同設備輪詢。
+永久 data 僅 `host`／`port`；options 僅 `poll_interval`、`scan_start`、`scan_end`、`devices[]`。P210 不含 group 欄位。Entry schema 2.1；舊 schema 明確拒絕自動遷移。
 
-## 部署時需要的資料
+Entity 操作先寫 HA optimistic 狀態，再依同一操作順序入列。CCT 的亮度與色溫為不同合併 key，各自在 bus 上驗證 0x06 echo。Python 3.14 eager task 用於避免同一 loop tick 的 ON／OFF 或 CCT 子指令順序反轉。
 
-1. Home Assistant 安裝方式與 Core 版本，用來決定相容基線及測試環境。
-2. TCP 閘道器品牌、型號、韌體與串列設定；部署時由使用者自行提供 IP/port。
-3. P404／P210 各一台可測設備，以及 U4 是否可測；指定不影響現場的通道與時段。
-4. HA MQTT 是否已運作；首次測試使用獨立 namespace，正式部署時沿用整合產生的 topic。
+worker 先取控制，再取 poll。每個控制 key 由 Slave、邏輯輸出、命令類別組成；替換只限 pending，舊等待者得到明確的 superseded 結果（`None`）。正在執行的封包不撤回。故障後清除 pending 控制；沒有 retry／read-back／跨重連 replay。
 
-不需要提供 MQTT 明文密碼；整合沿用 Home Assistant 已設定的 MQTT。
+Coordinator 每個 Slave 只送一筆讀取並等待，cache 低 byte 值只接受 0～100。輪詢結果附 request 開始的 monotonic 時間，Entity 忽略在最近一次操作前已開始的舊輪詢；後續 poll 才校正 optimistic 值。write echo 不改真實 cache。
 
-## 驗收與切換
+目標週期以整輪開始時間計算；過慢只 sleep(0)，沒有排程下一輪的 timer／task 或 backlog。掃描先取得整輪 lock，再取得 Transport submission gate，等待舊交易完成，保證 scan 與 poll 不穿插；取消也釋放 lock。掃描期間 UI 控制明確拒絕。
 
-- 核心：錯誤 CRC／錯誤設備／錯誤 echo 不得當成功；拆包黏包、逾時、取消、佇列滿均有測試。
-- 通訊：實機讀寫與回讀；驗證 TCP 跨連線遲到回覆、U4、0x05、色溫端點。
-- 整合：Discovery、斷線可用性、重啟恢復、設備刪除與 retained 清理。
-- 管理：新增修改設備、重疊驗證、全域輪詢與單設備開關、繁體中文介面。
-- 切換：備份 HA 與原 flow；停用原流程命令消費與輪詢，再啟用新系統；避免雙寫。
-- 回復：停止新系統，再恢復原 flow，檢查 Discovery 與實體對應。
-- 正式放行前需由部署者提供端點清單並完成連續運行紀錄，尚未執行。
+TCP 連線錯誤與 Slave transaction timeout 分開分類。`TimeoutError` 繼承 `OSError`，必須先處理 timeout，不能落入 TCP disconnect 分支。CRC 另有專屬 error，避免把 wrong slave／function／device exception 算成 CRC。
 
-## 官方參考
+## Registry lifecycle
 
-- Modbus 0x03、0x06 及例外回覆：https://www.modbus.org/file/secure/modbusprotocolspecification.pdf
-- HA 整合結構：https://developers.home-assistant.io/docs/creating_integration_file_structure/
-- MQTT Light：https://www.home-assistant.io/integrations/light.mqtt/
+每 Slave 一個 HA Device，identifier 包含 Entry ID／Slave；不建立 Gateway Device。所有 native light 設定 `has_entity_name=True`。
 
-官方 Modbus 文件只支持標準功能碼行為，不證明 Coselig 特有 register、高 byte 或色溫能力。
+setup 時依最新 profiles 列出有效 unique_id，只刪除同 Entry／本 integration 不再使用的輸出。存續 entity registry 項目完全不更新 user name。移除 Device 僅使用 HA 2026.10 的 `async_remove_device` API。
+
+Options 使用 `OptionsFlowWithReload`；Reconfigure 使用 `async_update_reload_and_abort`。無手動 options update listener／第二次 reload。新 Host 先通過 TCP，才修改 Entry，Entry ID 與 registry 身份保持不變。
+
+HA unload 先確認平台卸載成功，再停止 Hub；失敗保留 runtime。關機事件同樣停止 Coordinator／worker 與 socket。掃描流由 native progress task 取消生命週期與 `async_remove()` 釋放資源。
+
+## 測試與可重現環境
+
+`pyproject.toml`／`uv.lock` 固定測試依賴。HA **2026.10.1**、Python **3.14.7**、`pytest-homeassistant-custom-component` **0.13.372**。
+
+涵蓋：protocol、transport／priority／latest-wins／capacity／取消／重連、scanner／合法回覆／自訂範圍、profiles／register 不重疊、Coordinator／backoff／no backlog／failure isolation、Native Light／optimistic／CCT、完整 native Config／Options／Reconfigure manager、實際 HA platform service、Device／Entity registry／Group 差異、Diagnostics／redaction、setup／unload／關機清理。
+
+CI 使用 `pytest --cov-branch`，整體最低 90%；`config_flow.py` 行與分支要求 100%。涵蓋率報告由 `coverage.json` 產生，不將環境、fixture 或歷史文件計入產品 coverage。
+
+## 官方 API 依據
+
+以官方文件及已安裝的 HA 2026.10.1 原始碼核對；官方頁面會持續更新，實際相容性依固定版本測試。
+
+- [Config Flow／Reconfigure](https://developers.home-assistant.io/docs/config_entries_config_flow_handler/)
+- [Data entry flow／progress task](https://developers.home-assistant.io/docs/data_entry_flow_index/)
+- [OptionsFlowWithReload](https://developers.home-assistant.io/docs/core/integration/options_flow/)
+- [Config Entry runtime_data](https://developers.home-assistant.io/docs/core/integration-quality-scale/rules/runtime-data/)
+- [Native Light／Kelvin API](https://developers.home-assistant.io/docs/core/entity/light/)
+- [Entity Registry](https://developers.home-assistant.io/docs/entity_registry_index/)
+- [Diagnostics](https://developers.home-assistant.io/docs/core/integration/diagnostics/)
+- [HACS integration repository](https://www.hacs.xyz/docs/publish/integration/)
+
+這些來源確認 HA／HACS API，**不證明 Coselig 特有 register、高 byte、CCT 接線或 Gateway timeout 特性**。實機仍依 [驗收 Checklist](v1.0-acceptance.md) 留存結果。

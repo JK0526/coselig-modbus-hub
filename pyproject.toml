@@ -1,0 +1,24 @@
+[project]
+name = "coselig-modbus-hub"
+version = "1.0.0"
+requires-python = ">=3.14.2"
+
+[dependency-groups]
+dev = [
+  "pytest-homeassistant-custom-component==0.13.372",
+  "pytest-cov==7.1.0",
+  "ruff==0.17.0",
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+testpaths = ["tests"]
+pythonpath = ["."]
+addopts = "--cov=custom_components.coselig_modbus_hub --cov-branch --cov-report=term-missing --cov-report=json --cov-fail-under=90"
+
+[tool.ruff]
+target-version = "py314"
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "I", "UP"]
