@@ -127,7 +127,9 @@ async def test_replacing_runtime_state_does_not_leave_stale_entity_copy(
         for entity in affected
     )
     coordinator.states[1] = DeviceState(
-        registers=(0, 50, 0, 50), available=True, poll_started=hass.loop.time()
+        holding_registers={0x082A: 0, 0x082B: 50, 0x082C: 0, 0x082D: 50},
+        available=True,
+        poll_started=hass.loop.time(),
     )
     coordinator.async_set_updated_data(coordinator.states)
     assert all(

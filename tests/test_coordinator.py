@@ -6,12 +6,12 @@ import pytest
 from custom_components.coselig_modbus_hub.coordinator import Coordinator
 from custom_components.coselig_modbus_hub.hub import Hub
 from custom_components.coselig_modbus_hub.models import Device, Model
-from custom_components.coselig_modbus_hub.protocol import write
 from custom_components.coselig_modbus_hub.transport import (
     GatewayError,
     OfflineError,
     Transport,
 )
+from tests.dimmer_packets import write
 
 
 @pytest.fixture
@@ -228,9 +228,16 @@ async def test_scan_pauses_round_and_controls(gateway, coordinator):
     await asyncio.sleep(0)
     assert len(gateway.requests) == 1
     gateway.release.set()
-    assert await scan_task == [1, 2]
+    assert [r.slave for r in await scan_task] == [1, 2]
     await poll
-    assert [int.from_bytes(r[4:6], "big") for r in gateway.requests] == [2, 2, 4, 2]
+    assert [int.from_bytes(r[4:6], "big") for r in gateway.requests] == [
+        1,
+        2,
+        1,
+        2,
+        4,
+        2,
+    ]
     assert not coordinator.scanning
 
 

@@ -15,6 +15,8 @@ from .models import Device, devices_from_options
 
 type CoseligConfigEntry = ConfigEntry[Hub]
 
+PLATFORMS = [Platform.LIGHT, Platform.SWITCH]
+
 
 def ensure_parent_device(
     hass: HomeAssistant, entry: CoseligConfigEntry, device: Device
@@ -60,8 +62,8 @@ def prune_registries(hass: HomeAssistant, entry: CoseligConfigEntry) -> None:
         for output in device.outputs
     }
     registry_devices = [
-        *dr.async_entries_for_config_entry(registry, entry.entry_id),
         *dr.async_child_entries_for_config_entry(registry, entry.entry_id),
+        *dr.async_entries_for_config_entry(registry, entry.entry_id),
     ]
     for device in registry_devices:
         if not device.identifiers & expected_identifiers:
@@ -100,7 +102,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: CoseligConfigEntry) -> b
     )
     try:
         prune_registries(hass, entry)
-        await hass.config_entries.async_forward_entry_setups(entry, [Platform.LIGHT])
+        await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     except BaseException:
         await hub.stop()
         raise
@@ -108,7 +110,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: CoseligConfigEntry) -> b
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: CoseligConfigEntry) -> bool:
-    if await hass.config_entries.async_unload_platforms(entry, [Platform.LIGHT]):
+    if await hass.config_entries.async_unload_platforms(entry, PLATFORMS):
         await entry.runtime_data.stop()
         return True
     return False

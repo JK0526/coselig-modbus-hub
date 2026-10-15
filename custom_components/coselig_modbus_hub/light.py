@@ -11,6 +11,7 @@ from homeassistant.components.light import (
     ColorMode,
     LightEntity,
 )
+from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.device_registry import ChildDeviceInfo
@@ -18,17 +19,17 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from . import CoseligConfigEntry, ensure_parent_device
-from .const import DOMAIN, MIRED_MAX, MIRED_MIN, REGISTER_BASE
+from .const import DOMAIN, MIRED_MAX, MIRED_MIN
 from .coordinator import Coordinator
 from .models import (
     Device,
-    Output,
     brightness_to_raw,
     kelvin_to_raw,
     raw_to_brightness,
     raw_to_kelvin,
 )
-from .protocol import ProtocolError, write
+from .profiles import OutputSpec
+from .protocol import ProtocolError
 
 
 async def async_setup_entry(
@@ -49,6 +50,7 @@ async def async_setup_entry(
                 parent.id,
             )
             for output in device.outputs
+            if output.platform == Platform.LIGHT
         )
     async_add_entities(entities)
 
@@ -61,7 +63,7 @@ class CoseligLight(CoordinatorEntity[Coordinator], LightEntity):
         coordinator: Coordinator,
         entry_id: str,
         device: Device,
-        output: Output,
+        output: OutputSpec,
         parent_device_id: str,
     ) -> None:
         super().__init__(coordinator)
@@ -96,20 +98,20 @@ class CoseligLight(CoordinatorEntity[Coordinator], LightEntity):
     def _apply_poll(self) -> None:
         state = self.coordinator.states[self.device.slave]
         if (
-            not state.registers
+            not state.holding_registers
             or state.poll_started <= self._last_poll
             or state.poll_started < self._optimistic_at
         ):
             return
         self._last_poll = state.poll_started
-        raw = state.registers[self.output.registers[0] - REGISTER_BASE]
+        raw = state.holding_registers[self.output.registers[0]]
         self._attr_brightness = raw_to_brightness(raw)
         self._attr_is_on = raw > 0
         if raw:
             self._last_brightness = self._attr_brightness
         if self.output.cct:
             self._attr_color_temp_kelvin = raw_to_kelvin(
-                state.registers[self.output.registers[1] - REGISTER_BASE]
+                state.holding_registers[self.output.registers[1]]
             )
 
     @callback
@@ -121,7 +123,7 @@ class CoseligLight(CoordinatorEntity[Coordinator], LightEntity):
         try:
             await self.coordinator.async_command(
                 self.device.slave,
-                write(self.device.slave, register, value),
+                self.device.profile.command(self.device.slave, register, value),
                 (self.device.slave, self.output.key, command_type),
             )
         except (

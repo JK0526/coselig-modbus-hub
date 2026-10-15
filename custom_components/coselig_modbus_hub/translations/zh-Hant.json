@@ -49,7 +49,7 @@
       },
       "model": {
         "title": "Slave {slave}：型號",
-        "description": "請選擇實際設備型號。掃描只確認 Slave 回應，不辨識型號。",
+        "description": "偵測類型：{family}；建議型號：{recommended}。請確認實際型號；P404/P210 無法自動區分。",
         "data": {
           "model": "設備型號"
         }
@@ -111,7 +111,7 @@
       },
       "model": {
         "title": "Slave {slave}：型號",
-        "description": "請選擇實際設備型號。掃描只確認 Slave 回應，不辨識型號。",
+        "description": "偵測類型：{family}；建議型號：{recommended}。請確認實際型號；P404/P210 無法自動區分。",
         "data": {
           "model": "設備型號"
         }

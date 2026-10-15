@@ -49,7 +49,7 @@
       },
       "model": {
         "title": "Slave {slave}: model",
-        "description": "Select the physical model. Scanning does not identify models.",
+        "description": "Detected family: {family}; recommended model: {recommended}. Confirm the physical model. P404/P210 cannot be distinguished automatically.",
         "data": {
           "model": "Device model"
         }
@@ -111,7 +111,7 @@
       },
       "model": {
         "title": "Slave {slave}: model",
-        "description": "Select the physical model. Scanning does not identify models.",
+        "description": "Detected family: {family}; recommended model: {recommended}. Confirm the physical model. P404/P210 cannot be distinguished automatically.",
         "data": {
           "model": "Device model"
         }

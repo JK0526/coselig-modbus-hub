@@ -13,6 +13,7 @@ from custom_components.coselig_modbus_hub.config_flow import (
 from custom_components.coselig_modbus_hub.const import DOMAIN
 from custom_components.coselig_modbus_hub.hub import Hub
 from custom_components.coselig_modbus_hub.models import Device, Model
+from custom_components.coselig_modbus_hub.scanner import ScanResult
 from custom_components.coselig_modbus_hub.transport import GatewayError
 
 
@@ -84,7 +85,7 @@ async def test_user_error_retry_and_progress(flow):
 
     async def scan(*args):
         await release.wait()
-        return [1, 3]
+        return [ScanResult(1), ScanResult(3)]
 
     with (
         patch(
@@ -137,7 +138,7 @@ async def test_empty_or_disconnected_scan_retry(flow, failure):
     assert result["menu_options"] == ["rescan", "scan_range", "cancel"]
     with patch(
         "custom_components.coselig_modbus_hub.config_flow.scan",
-        new=AsyncMock(return_value=[7]),
+        new=AsyncMock(return_value=[ScanResult(slave) for slave in [7]]),
     ):
         assert (await flow.async_step_rescan())["step_id"] == "scan_range"
         assert flow._scan_task is None
@@ -271,7 +272,9 @@ async def test_options_runtime_scan_pauses(options, entry, hass):
     await options.async_step_init()
     hub = Hub.create(hass, "test", 502, (Device(1, Model.P404),), 2)
     entry.runtime_data = hub
-    with patch.object(hub, "scan", new=AsyncMock(return_value=[1])) as scan:
+    with patch.object(
+        hub, "scan", new=AsyncMock(return_value=[ScanResult(slave) for slave in [1]])
+    ) as scan:
         await options.async_step_scan()
         await options._scan_task
         await options.async_step_scan()
@@ -288,7 +291,7 @@ async def test_full_native_flow_manager(hass):
         ),
         patch(
             "custom_components.coselig_modbus_hub.config_flow.scan",
-            new=AsyncMock(return_value=[1, 3]),
+            new=AsyncMock(return_value=[ScanResult(slave) for slave in [1, 3]]),
         ),
         patch(
             "custom_components.coselig_modbus_hub.async_setup_entry",
@@ -442,7 +445,7 @@ async def test_forms_use_actual_ha_frontend_serializer(flow, options):
 async def test_tcp_success_never_scans_until_range_submitted(flow, gateway, start, end):
     with patch(
         "custom_components.coselig_modbus_hub.config_flow.scan",
-        new=AsyncMock(return_value=[start]),
+        new=AsyncMock(return_value=[ScanResult(slave) for slave in [start]]),
     ) as scanner:
         result = await flow.async_step_user({"host": "127.0.0.1", "port": gateway.port})
         assert result["step_id"] == "scan_range"
@@ -489,7 +492,7 @@ async def test_rescan_remembers_range_then_persists_new_range(options, entry, ha
     assert options._scan_task is None
     with patch(
         "custom_components.coselig_modbus_hub.config_flow.scan",
-        new=AsyncMock(return_value=[60]),
+        new=AsyncMock(return_value=[ScanResult(slave) for slave in [60]]),
     ) as scanner:
         await options.async_step_scan_range({"scan_start": 60, "scan_end": 74})
         await options._scan_task
@@ -504,3 +507,71 @@ async def test_rescan_remembers_range_then_persists_new_range(options, entry, ha
     result = await options.async_step_groups({"group_a": "single"})
     assert result["data"]["scan_start"] == 60
     assert result["data"]["scan_end"] == 74
+
+
+@pytest.mark.parametrize(
+    "family,candidates,recommended",
+    [
+        ("dimmer", ("p404", "p210"), "p404"),
+        ("relay", ("r410",), "r410"),
+        ("unknown", ("p404", "p210", "r410"), "p404"),
+    ],
+)
+async def test_identified_model_confirmation(flow, family, candidates, recommended):
+    from custom_components.coselig_modbus_hub.profiles import DeviceFamily
+
+    result = ScanResult(
+        70,
+        DeviceFamily(family),
+        tuple(Model(m) for m in candidates),
+        Model(recommended),
+    )
+    flow._gateway = {"host": "test", "port": 502}
+    flow._detections = {70: result}
+    flow._found = [70]
+    form = await flow.async_step_scan_result({"devices": ["70"]})
+    assert form["description_placeholders"]["family"] == family
+    assert form["description_placeholders"]["recommended"] == recommended.upper()
+    assert form["data_schema"]({})["model"] == recommended
+    choices = next(iter(form["data_schema"].schema.values())).config["options"]
+    assert [c["value"] for c in choices] == list(candidates)
+    result = await flow.async_step_model({"model": recommended})
+    if recommended == "r410":
+        assert result["options"]["devices"] == [{"slave": 70, "model": "r410"}]
+    else:
+        assert result["step_id"] == "groups"
+
+
+async def test_rescan_detection_does_not_overwrite_existing_models(
+    options, hass, entry
+):
+    from custom_components.coselig_modbus_hub.profiles import DeviceFamily
+
+    configured = [
+        {"slave": 1, "model": "p404", "group_a": "cct", "group_b": "single"},
+        {"slave": 3, "model": "p210", "group_a": "cct"},
+        {"slave": 70, "model": "r410"},
+    ]
+    hass.config_entries.async_update_entry(
+        entry, options={**entry.options, "devices": configured}
+    )
+    await options.async_step_init()
+    options._detections = {
+        1: ScanResult(1, DeviceFamily.RELAY, (Model.R410,), Model.R410),
+        3: ScanResult(3),
+    }
+    options._found = [1, 3]  # R410 is Missing and must remain selected.
+    form = await options.async_step_scan_result()
+    assert form["data_schema"]({})["devices"] == ["1", "3", "70"]
+    form = await options.async_step_scan_result({"devices": ["1", "3", "70"]})
+    for old in configured:
+        assert form["data_schema"]({})["model"] == old["model"]
+        form = await options.async_step_model({"model": old["model"]})
+    assert form["data_schema"]({})["group_a"] == "cct"
+    form = await options.async_step_groups({"group_a": "cct", "group_b": "single"})
+    assert form["data_schema"]({})["group_a"] == "cct"
+    result = await options.async_step_groups({"group_a": "cct"})
+    assert result["data"]["devices"] == configured
+    assert not any(
+        "family" in d or "candidates" in d for d in result["data"]["devices"]
+    )

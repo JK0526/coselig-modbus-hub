@@ -9,7 +9,7 @@ from homeassistant.core import HomeAssistant
 
 from .coordinator import Coordinator
 from .models import Device
-from .scanner import scan
+from .scanner import ScanResult, scan
 from .trace import ProtocolTraceBuffer
 from .transport import GatewayError, Transport
 
@@ -43,13 +43,16 @@ class Hub:
         start: int,
         end: int,
         progress: Callable[[int, int, int], None] | None = None,
-    ) -> list[int]:
+    ) -> list[ScanResult]:
         async with self.coordinator.pause():
             try:
                 return await scan(self.transport, start, end, progress)
             except GatewayError:
                 self.coordinator.gateway_lost()
                 raise
+            finally:
+                # Wake the existing scheduler; Poll=0 continues to wait without I/O.
+                self.coordinator.set_poll_interval(self.coordinator.poll_interval)
 
     async def stop(self) -> None:
         try:

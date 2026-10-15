@@ -22,7 +22,7 @@ from .const import (
 )
 from .coordinator import valid_poll_interval
 from .models import Device, GroupMode, Model, devices_from_options
-from .scanner import scan
+from .scanner import ScanResult, scan
 from .transport import GatewayError, Transport
 
 
@@ -89,11 +89,12 @@ class ProfileFlow:
         }
         self._existing: dict[int, Device] = {}
         self._found: list[int] = []
+        self._detections: dict[int, ScanResult] = {}
         self._selected: list[int] = []
         self._devices: list[Device] = []
         self._index = 0
         self._group_index = 0
-        self._scan_task: asyncio.Task[list[int]] | None = None
+        self._scan_task: asyncio.Task[list[ScanResult]] | None = None
         self._progress = {
             "current": "0",
             "total": str(DEFAULT_SCAN_END - DEFAULT_SCAN_START + 1),
@@ -110,7 +111,7 @@ class ProfileFlow:
         self.async_update_progress(current / total)
         self.async_notify_flow_changed()
 
-    async def _run_scan(self) -> list[int]:
+    async def _run_scan(self) -> list[ScanResult]:
         # Publish the native progress step before an eager HA task can finish.
         await asyncio.sleep(0)
         start, end = self._options["scan_start"], self._options["scan_end"]
@@ -142,7 +143,9 @@ class ProfileFlow:
                 progress_task=self._scan_task,
             )
         try:
-            self._found = self._scan_task.result()
+            results = self._scan_task.result()
+            self._detections = {result.slave: result for result in results}
+            self._found = list(self._detections)
         except GatewayError:
             self._scan_error = True
         self._scan_task = None
@@ -247,6 +250,8 @@ class ProfileFlow:
             return await self.async_step_groups()
         slave = self._selected[self._index]
         old = self._existing.get(slave)
+        detection = self._detections.get(slave, ScanResult(slave))
+        candidates = tuple(Model) if old else detection.candidates
         if user_input is not None:
             model = Model(user_input["model"])
             self._devices.append(
@@ -256,15 +261,24 @@ class ProfileFlow:
             return await self.async_step_model()
         return self.async_show_form(
             step_id="model",
-            description_placeholders={"slave": f"{slave:02d}"},
+            description_placeholders={
+                "slave": f"{slave:02d}",
+                "family": detection.family.value,
+                "recommended": detection.recommended.value.upper()
+                if detection.recommended
+                else "—",
+            },
             data_schema=vol.Schema(
                 {
                     vol.Required(
-                        "model", default=old.model.value if old else "p404"
+                        "model",
+                        default=old.model.value
+                        if old
+                        else (detection.recommended or Model.P404).value,
                     ): select(
                         [
                             {"value": model.value, "label": model.value.upper()}
-                            for model in Model
+                            for model in candidates
                         ]
                     )
                 }
@@ -277,23 +291,20 @@ class ProfileFlow:
         indices = [
             index
             for index, device in enumerate(self._devices)
-            if device.model in (Model.P404, Model.P210)
+            if device.profile.group_fields
         ]
         if self._group_index >= len(indices):
             return self._finish()
         index = indices[self._group_index]
         device = self._devices[index]
         if user_input is not None:
-            group_a = GroupMode(user_input["group_a"])
-            self._devices[index] = (
-                Device(device.slave, device.model, group_a)
-                if device.model == Model.P210
-                else Device(
-                    device.slave,
-                    device.model,
-                    group_a,
-                    GroupMode(user_input["group_b"]),
-                )
+            self._devices[index] = Device(
+                device.slave,
+                device.model,
+                **{
+                    field: GroupMode(user_input[field])
+                    for field in device.profile.group_fields
+                },
             )
             self._group_index += 1
             return await self.async_step_groups()
@@ -302,12 +313,9 @@ class ProfileFlow:
             {"value": "cct", "label": "1 × CCT / 1 × 雙色溫"},
         ]
         fields: dict[Any, Any] = {
-            vol.Required("group_a", default=device.group_a.value): select(choices)
+            vol.Required(field, default=getattr(device, field).value): select(choices)
+            for field in device.profile.group_fields
         }
-        if device.model == Model.P404:
-            fields[vol.Required("group_b", default=device.group_b.value)] = select(
-                choices
-            )
         return self.async_show_form(
             step_id="groups",
             description_placeholders={"slave": f"{device.slave:02d}"},

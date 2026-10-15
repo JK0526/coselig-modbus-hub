@@ -6,14 +6,13 @@ from custom_components.coselig_modbus_hub.protocol import (
     CRCError,
     DeviceException,
     ProtocolError,
-    read,
-    write,
 )
 from custom_components.coselig_modbus_hub.transport import (
     GatewayError,
     OfflineError,
     Transport,
 )
+from tests.dimmer_packets import read, write
 
 
 @pytest.fixture

@@ -15,7 +15,8 @@ from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 
 from .const import BACKOFF, DOMAIN
 from .models import Device
-from .protocol import ProtocolError, read
+from .profiles import ModbusData
+from .protocol import ProtocolError
 from .transport import CommandKey, GatewayError, OfflineError, Transport
 
 _LOGGER = logging.getLogger(__name__)
@@ -26,8 +27,7 @@ def valid_poll_interval(interval: float) -> bool:
 
 
 @dataclass
-class DeviceState:
-    registers: tuple[int, ...] = ()
+class DeviceState(ModbusData):
     available: bool = False
     consecutive_failures: int = 0
     poll_started: float = 0
@@ -130,15 +130,12 @@ class Coordinator(DataUpdateCoordinator[dict[int, DeviceState]]):
             started = asyncio.get_running_loop().time()
             _LOGGER.debug("Poll slave %s", device.slave)
             try:
-                response = await self.transport.submit(
-                    read(device.slave, device.poll_count), poll=True
-                )
-                registers = tuple(
-                    int.from_bytes(response[i : i + 2], "big") & 0xFF
-                    for i in range(3, 3 + response[2], 2)
-                )
-                if any(value > 100 for value in registers):
-                    raise ProtocolError("Invalid raw register value")
+                data = ModbusData()
+                for spec in device.profile.poll_specs(device):
+                    response = await self.transport.submit(
+                        spec.request(device.slave), poll=True
+                    )
+                    device.profile.decode(spec, response, data)
             except GatewayError:
                 self.gateway_lost()
                 return
@@ -151,7 +148,10 @@ class Coordinator(DataUpdateCoordinator[dict[int, DeviceState]]):
                 successes += 1
                 if not state.available and state.consecutive_failures >= 3:
                     _LOGGER.info("Slave #%s restored", device.slave)
-                state.registers = registers
+                state.holding_registers = data.holding_registers
+                state.input_registers = data.input_registers
+                state.coils = data.coils
+                state.discrete_inputs = data.discrete_inputs
                 state.poll_started = started
                 state.consecutive_failures = 0
                 state.available = True
@@ -193,7 +193,7 @@ class Coordinator(DataUpdateCoordinator[dict[int, DeviceState]]):
                     # No reconnect FC03 while paused. Restore previously confirmed health.
                     for state in self.states.values():
                         state.available = (
-                            bool(state.registers) and state.consecutive_failures < 3
+                            state.populated and state.consecutive_failures < 3
                         )
                     self.async_set_updated_data(self.states)
             if self.polling_paused:

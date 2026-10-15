@@ -1,4 +1,4 @@
-# v1.2.1 開發架構與驗證依據
+# v1.3.0 開發架構與驗證依據
 
 更新：2026-10-15。v1.0 取代 v0.2.x 的 MQTT／Panel／Channel 架構；歷史問題盤點保留於 `docs/specs/`，不作新版開發規範。
 
@@ -7,11 +7,13 @@
 | 模組 | 責任 |
 | --- | --- |
 | `models.py` | 嚴格 Device／Model／GroupMode、輸出占用、身份、亮度與色溫轉換 |
-| `protocol.py` | CRC16、0x03／0x06、例外回覆、完整 echo、拆包與單一 ADU 讀取 |
+| `protocol.py` | CRC16、通用 FC01～FC06、例外回覆、完整 echo、拆包與單一 ADU 讀取 |
 | `transport.py` | 一個 socket／worker、單筆在途、控制優先、bounded latest-wins、交易統計 |
-| `scanner.py` | 獨佔 bus、最小共同 0x03 probe、合法回覆才列 Slave；無型號判斷 |
+| `scanner.py` | 獨佔 bus、共同 discovery、依 Profile family probes 辨識、型號由使用者確認 |
 | `coordinator.py` | 單循環目標週期、逐 Slave 輪詢、真實 cache、可用性與重連退避、HA listener |
 | `hub.py` | 組合 Transport／Coordinator，管理啟停與暫停輪詢的掃描 |
+| `profiles.py` | 集中模型 register map、PollSpec、OutputSpec、dimmer codec、family probes |
+| `switch.py` | R410 原生 Relay Switch、optimistic 狀態、FC05 與 poll 校正 |
 | `light.py` | 原生燈光、立即 optimistic 更新、正常 poll 校正、Kelvin color mode |
 | `config_flow.py` | Gateway／進度掃描／型號／Group、Options、Reconfigure |
 | `__init__.py` | typed `ConfigEntry[Hub].runtime_data`、啟動 retry、平台／關機清理、registry 差異移除 |
@@ -23,13 +25,13 @@
 
 ## 資料與交易
 
-永久 data 僅 `host`／`port`；options 僅 `poll_interval`、`scan_start`、`scan_end`、`devices[]`。P404 保存 `group_a`／`group_b`，P210 只保存 `group_a`；v1.1.0 缺少 P210 `group_a` 時由 `Device.from_dict()` 預設為 `single`。Entry schema 2.1；舊 schema 明確拒絕自動遷移。
+永久 data 僅 `host`／`port`；options 僅 `poll_interval`、`scan_start`、`scan_end`、`devices[]`。P404 保存 `group_a`／`group_b`，P210 只保存 `group_a`，R410 不保存 Group；v1.1.0 缺少 P210 `group_a` 時由 `Device.from_dict()` 預設為 `single`。Entry schema 2.1；舊 schema 明確拒絕自動遷移。
 
 Entity 操作先寫 HA optimistic 狀態，再依同一操作順序入列。CCT 的亮度與色溫為不同合併 key，各自在 bus 上驗證 0x06 echo。Python 3.14 eager task 用於避免同一 loop tick 的 ON／OFF 或 CCT 子指令順序反轉。
 
 worker 先取控制，再取 poll。每個控制 key 由 Slave、邏輯輸出、命令類別組成；替換只限 pending，舊等待者得到明確的 superseded 結果（`None`）。正在執行的封包不撤回。故障後清除 pending 控制；沒有 retry／read-back／跨重連 replay。
 
-Coordinator 每個 Slave 只送一筆讀取並等待，cache 低 byte 值只接受 0～100。輪詢結果附 request 開始的 monotonic 時間，Entity 忽略在最近一次操作前已開始的舊輪詢；後續 poll 才校正 optimistic 值。write echo 不改真實 cache。
+Coordinator 依 Profile 的 PollSpec 逐 Slave 送一筆讀取並等待，狀態使用 address-keyed holding/input registers 與 coils/discrete inputs。低 byte 與 0～100 驗證只存在 Dimmer Profile。輪詢結果附 request 開始的 monotonic 時間，Entity 忽略在最近一次操作前已開始的舊輪詢；後續 poll 才校正 optimistic 值。write echo 不改真實 cache。
 
 目標週期以整輪開始時間計算；過慢只 sleep(0)，沒有排程下一輪的 timer／task 或 backlog。掃描先取得整輪 lock，再取得 Transport submission gate，等待舊交易完成，保證 scan 與 poll 不穿插；取消也釋放 lock。掃描期間 UI 控制明確拒絕。
 
@@ -37,7 +39,7 @@ TCP 連線錯誤與 Slave transaction timeout 分開分類。`TimeoutError` 繼�
 
 ## Registry lifecycle
 
-每 Slave 一個 Parent HA Device，identifier 包含 Entry ID／Slave；每個有效輸出使用原生 Child Device，identifier 維持 entity unique_id，並以 Parent 的真實 `DeviceEntry.id` 建立 `parent_device_id`。不建立 Gateway Device，也不使用 `via_device_id` 表示邏輯輸出。所有 native light 設定 `has_entity_name=True`。
+每 Slave 一個 Parent HA Device，identifier 包含 Entry ID／Slave；每個有效輸出使用原生 Child Device，identifier 維持 entity unique_id，並以 Parent 的真實 `DeviceEntry.id` 建立 `parent_device_id`。不建立 Gateway Device，也不使用 `via_device_id` 表示邏輯輸出。所有 native light／switch 設定 `has_entity_name=True`。
 
 setup 時依最新 profiles 列出有效 unique_id，只刪除同 Entry／本 integration 不再使用的輸出。存續 entity registry 項目完全不更新 user name。移除 Device 僅使用 HA 2026.10 的 `async_remove_device` API。
 
@@ -82,3 +84,7 @@ Monitor訂閱每0.5秒讀取ring快照，只在變更時推送；無Modbus I/O�
 ## v1.1.1 行為
 
 P210 的 Group A 可選 `single` 或 `cct`；single 建立 CH1／CH2，cct 只建立 `group_a` 雙色溫 entity，兩者均固定 FC03 起點 `0x082A`、count 2。P404 的 Group A／B 行為不變。切換輸出模式沿用既有 registry 差異清理與原生 Area／名稱保存策略。
+
+## v1.3.0
+
+詳見 [v1.3.0 architecture](v1.3.0-architecture.md)。R410 只建立四個 Switch；FC02 僅供 Scanner identification，無 DI runtime poll 或 entity。舊 v1.1／v1.2 發布說明保留歷史記錄，現行行為以此文件與 v1.3.0 架構為準。

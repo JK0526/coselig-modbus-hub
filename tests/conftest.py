@@ -40,6 +40,9 @@ class Gateway:
     requests: list[bytes] = field(default_factory=list)
     modes: dict[int, str] = field(default_factory=dict)
     registers: dict[int, list[int]] = field(default_factory=dict)
+    coils: dict[int, list[bool]] = field(default_factory=dict)
+    families: dict[int, str] = field(default_factory=dict)
+    probe_modes: dict[tuple[int, int, int], str] = field(default_factory=dict)
     handlers: set = field(default_factory=set)
     writers: set = field(default_factory=set)
     arrived: asyncio.Event = field(default_factory=asyncio.Event)
@@ -58,17 +61,45 @@ class Gateway:
                 self.arrived.set()
                 if self.block:
                     await self.release.wait()
-                mode = self.modes.get(request[0], "normal")
+                address = int.from_bytes(request[2:4], "big")
+                function = request[1]
+                mode = self.probe_modes.get(
+                    (request[0], function, address),
+                    self.modes.get(request[0], "normal"),
+                )
                 if mode == "disconnect":
                     return
                 regs = self.registers.setdefault(request[0], [20, 25, 50, 75])
-                if request[1] == 6:
-                    regs[int.from_bytes(request[2:4], "big") - 0x082A] = request[5]
+                coils = self.coils.setdefault(request[0], [True, False, True, False])
+                family = self.families.get(request[0], "dimmer")
+                if function == 6:
+                    regs[address - 0x082A] = request[5]
                     response = request
+                elif function == 5:
+                    coils[address] = request[4:6] == b"\xff\x00"
+                    response = request
+                elif function == 3 and address == 0 and family != "absent":
+                    # Stored Modbus ID need not equal the DIP-selected wire slave.
+                    response = frame(bytes([request[0], 3, 2, 0, 99]))
+                elif (function == 3 and address == 0x082A and family != "dimmer") or (
+                    function == 2 and family != "relay"
+                ):
+                    response = frame(bytes([request[0], function | 0x80, 1]))
+                elif function in (1, 2):
+                    response = frame(
+                        bytes(
+                            [
+                                request[0],
+                                function,
+                                1,
+                                sum(int(on) << index for index, on in enumerate(coils)),
+                            ]
+                        )
+                    )
                 else:
                     count = int.from_bytes(request[4:6], "big")
                     response = frame(
-                        bytes([request[0], 3, count * 2])
+                        bytes([request[0], function, count * 2])
                         + b"".join(value.to_bytes(2, "big") for value in regs[:count])
                     )
                 if mode == "timeout":
@@ -83,7 +114,7 @@ class Gateway:
                     response = frame(bytes([request[0], 3, 3, 0, 0, 0]))
                 elif mode == "exception":
                     response = frame(bytes([request[0], request[1] | 0x80, 2]))
-                elif mode == "echo" and request[1] == 6:
+                elif mode == "echo" and request[1] in (5, 6):
                     response = frame(request[:5] + bytes([request[5] + 1]))
                 writer.write(response[:1])
                 await writer.drain()

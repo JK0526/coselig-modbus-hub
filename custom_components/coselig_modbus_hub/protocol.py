@@ -35,22 +35,51 @@ def frame(data: bytes) -> bytes:
     return data + struct.pack("<H", crc16(data))
 
 
-def read(slave: int, count: int) -> bytes:
-    if type(slave) is not int or not 1 <= slave <= 247 or count not in (2, 4):
-        raise ValueError("Invalid slave or register count")
-    return frame(struct.pack(">BBHH", slave, 3, 0x082A, count))
+def _uint16(value: int) -> bool:
+    return type(value) is int and 0 <= value <= 0xFFFF
 
 
-def write(slave: int, register: int, value: int) -> bytes:
+def _request(slave: int, function: int, address: int, value: int) -> bytes:
     if type(slave) is not int or not 1 <= slave <= 247:
         raise ValueError("Invalid slave")
-    if (
-        register not in range(0x082A, 0x082E)
-        or type(value) is not int
-        or not 0 <= value <= 100
-    ):
-        raise ValueError("Invalid register or value")
-    return frame(struct.pack(">BBHBB", slave, 6, register, 5, value))
+    if not _uint16(address) or not _uint16(value):
+        raise ValueError("Invalid address or value")
+    return frame(struct.pack(">BBHH", slave, function, address, value))
+
+
+def _read(slave: int, function: int, start: int, count: int) -> bytes:
+    maximum = 2000 if function in (1, 2) else 125
+    if type(count) is not int or not 1 <= count <= maximum:
+        raise ValueError("Invalid read count")
+    if not _uint16(start) or start + count > 0x10000:
+        raise ValueError("Invalid read range")
+    return _request(slave, function, start, count)
+
+
+def read_coils(slave: int, start: int, count: int) -> bytes:
+    return _read(slave, 1, start, count)
+
+
+def read_discrete_inputs(slave: int, start: int, count: int) -> bytes:
+    return _read(slave, 2, start, count)
+
+
+def read_holding_registers(slave: int, start: int, count: int) -> bytes:
+    return _read(slave, 3, start, count)
+
+
+def read_input_registers(slave: int, start: int, count: int) -> bytes:
+    return _read(slave, 4, start, count)
+
+
+def write_single_coil(slave: int, address: int, value: bool) -> bytes:
+    if type(value) is not bool:
+        raise ValueError("Coil value must be bool")
+    return _request(slave, 5, address, 0xFF00 if value else 0)
+
+
+def write_single_register(slave: int, address: int, value: int) -> bytes:
+    return _request(slave, 6, address, value)
 
 
 def validate(request: bytes, response: bytes) -> bytes:
@@ -64,11 +93,12 @@ def validate(request: bytes, response: bytes) -> bytes:
         raise DeviceException(response[2])
     if response[1] != request[1]:
         raise ProtocolError("Wrong function")
-    if request[1] == 6:
+    if request[1] in (5, 6):
         if response != request:
             raise ProtocolError("Write echo mismatch")
-    elif request[1] == 3:
-        count = int.from_bytes(request[4:6], "big") * 2
+    elif request[1] in (1, 2, 3, 4):
+        quantity = int.from_bytes(request[4:6], "big")
+        count = (quantity + 7) // 8 if request[1] in (1, 2) else quantity * 2
         if response[2] != count or len(response) != count + 5:
             raise ProtocolError("Read length mismatch")
     else:
@@ -79,13 +109,13 @@ def validate(request: bytes, response: bytes) -> bytes:
 async def receive(reader: asyncio.StreamReader) -> bytes:
     """Read one ADU from a TCP stream, including fragmented frames."""
     header = await reader.readexactly(2)
-    if header[1] in (0x83, 0x86):
+    if header[1] in (0x81, 0x82, 0x83, 0x84, 0x85, 0x86):
         return header + await reader.readexactly(3)
-    if header[1] == 6:
+    if header[1] in (5, 6):
         return header + await reader.readexactly(6)
-    if header[1] == 3:
+    if header[1] in (1, 2, 3, 4):
         count = await reader.readexactly(1)
-        if count[0] not in (4, 8):
+        if not 1 <= count[0] <= 250 or (header[1] in (3, 4) and count[0] % 2):
             raise ProtocolError("Unsupported read size")
         return header + count + await reader.readexactly(count[0] + 2)
     raise ProtocolError("Unsupported response")

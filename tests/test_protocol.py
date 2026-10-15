@@ -8,11 +8,10 @@ from custom_components.coselig_modbus_hub.protocol import (
     ProtocolError,
     crc16,
     frame,
-    read,
     receive,
     validate,
-    write,
 )
+from tests.dimmer_packets import read, write
 
 
 def test_crc_and_fixed_packets():
@@ -24,7 +23,7 @@ def test_crc_and_fixed_packets():
     assert validate(request, request) == request
 
 
-@pytest.mark.parametrize("slave,count", [(0, 2), (248, 2), (True, 2), (1, 3)])
+@pytest.mark.parametrize("slave,count", [(0, 2), (248, 2), (True, 2), (1, 0)])
 def test_invalid_read(slave, count):
     with pytest.raises(ValueError):
         read(slave, count)

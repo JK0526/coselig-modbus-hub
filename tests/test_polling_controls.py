@@ -24,9 +24,9 @@ async def test_zero_no_background_reads_no_failure_and_scan_available(hub, gatew
     assert hub.coordinator.states[1].available
     assert hub.coordinator.states[1].consecutive_failures == before
     assert hub.transport.connected
-    assert await hub.scan(1, 2) == [1, 2]
+    assert [r.slave for r in await hub.scan(1, 2)] == [1, 2]
     await asyncio.sleep(0.02)
-    assert [r[0] for r in gateway.requests] == [1, 2]
+    assert [r[0] for r in gateway.requests] == [1, 1, 2, 2]
     assert all(e["source"] == "scan" for e in hub.transport.trace.snapshot()[-6:])
 
 
@@ -37,7 +37,7 @@ async def test_resume_immediate_poll_and_state_correction(hub, gateway):
     hub.coordinator.set_poll_interval(2)
     await asyncio.wait_for(gateway.arrived.wait(), 1)
     async with hub.coordinator.pause():
-        assert hub.coordinator.states[1].registers[0] == 65
+        assert hub.coordinator.states[1].holding_registers[0x082A] == 65
     assert len(gateway.requests) == 1
     hub.coordinator.set_poll_interval(0)
     await asyncio.sleep(0.03)

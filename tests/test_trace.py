@@ -7,12 +7,11 @@ from custom_components.coselig_modbus_hub.protocol import (
     CRCError,
     DeviceException,
     ProtocolError,
-    read,
-    write,
 )
 from custom_components.coselig_modbus_hub.scanner import scan
 from custom_components.coselig_modbus_hub.trace import ProtocolTraceBuffer
 from custom_components.coselig_modbus_hub.transport import GatewayError, Transport
+from tests.dimmer_packets import read, write
 
 
 async def test_tx_rx_ok_full_hex_latency(gateway):

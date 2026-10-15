@@ -4,33 +4,23 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from .const import MINIMUM_BRIGHTNESS, MIRED_MAX, MIRED_MIN, REGISTER_BASE
+if TYPE_CHECKING:
+    from .profiles import DeviceProfile, OutputSpec
+
+from .const import MINIMUM_BRIGHTNESS, MIRED_MAX, MIRED_MIN
 
 
 class Model(StrEnum):
     P404 = "p404"
     P210 = "p210"
+    R410 = "r410"
 
 
 class GroupMode(StrEnum):
     SINGLE = "single"
     CCT = "cct"
-
-
-@dataclass(frozen=True)
-class Output:
-    key: str
-    name: str
-    registers: tuple[int, ...]
-
-    @property
-    def cct(self) -> bool:
-        return len(self.registers) == 2
-
-    def unique_id(self, entry_id: str, slave: int) -> str:
-        return f"{entry_id}_slave_{slave}_{self.key}"
 
 
 @dataclass(frozen=True)
@@ -44,53 +34,35 @@ class Device:
         if type(self.slave) is not int or not 1 <= self.slave <= 247:
             raise ValueError("Slave must be an integer 1..247")
         object.__setattr__(self, "model", Model(self.model))
-        if self.model == Model.P210:
-            if self.group_b is not None:
-                raise ValueError("P210 does not support Group B")
+        profile = self.profile
+        if self.group_b is not None and "group_b" not in profile.group_fields:
+            raise ValueError(f"{self.model} does not support Group B")
+        if self.group_a is not None and "group_a" not in profile.group_fields:
+            raise ValueError(f"{self.model} does not support Group A")
+        for field in profile.group_fields:
             object.__setattr__(
-                self, "group_a", GroupMode(self.group_a or GroupMode.SINGLE)
+                self, field, GroupMode(getattr(self, field) or GroupMode.SINGLE)
             )
-        else:
-            object.__setattr__(
-                self, "group_a", GroupMode(self.group_a or GroupMode.SINGLE)
-            )
-            object.__setattr__(
-                self, "group_b", GroupMode(self.group_b or GroupMode.SINGLE)
-            )
+
+    @property
+    def profile(self) -> DeviceProfile:
+        from .profiles import PROFILES
+
+        return PROFILES[self.model]
 
     @property
     def poll_count(self) -> int:
-        return 4 if self.model == Model.P404 else 2
+        return self.profile.poll_specs(self)[0].count
 
     @property
-    def outputs(self) -> tuple[Output, ...]:
-        result: list[Output] = []
-        for group, offset, mode in (("a", 0, self.group_a), ("b", 2, self.group_b)):
-            if offset == 2 and self.model == Model.P210:
-                break
-            if mode == GroupMode.CCT:
-                result.append(
-                    Output(
-                        f"group_{group}",
-                        f"雙色溫 {group.upper()}",
-                        (REGISTER_BASE + offset, REGISTER_BASE + offset + 1),
-                    )
-                )
-            else:
-                for index in (offset, offset + 1):
-                    result.append(
-                        Output(
-                            f"ch{index + 1}", f"CH{index + 1}", (REGISTER_BASE + index,)
-                        )
-                    )
-        return tuple(result)
+    def outputs(self) -> tuple[OutputSpec, ...]:
+        return self.profile.outputs(self)
 
     def as_dict(self) -> dict[str, Any]:
         result = {"slave": self.slave, "model": self.model.value}
-        if self.model == Model.P210:
-            result["group_a"] = self.group_a.value
-        else:
-            result.update(group_a=self.group_a.value, group_b=self.group_b.value)
+        result.update(
+            {field: getattr(self, field).value for field in self.profile.group_fields}
+        )
         return result
 
     @classmethod
