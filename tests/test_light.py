@@ -101,10 +101,10 @@ async def test_unavailable_rejects_without_write(lights):
 async def test_single_and_entity_metadata(lights):
     coordinator, entities = lights
     light = entities[1]
-    assert light.name == "CH3"
+    assert light.name is None
     assert light.unique_id == "entry_slave_1_ch3"
     assert light.has_entity_name
-    assert light.device_info["name"] == "CH3"
+    assert light.device_info["name"] == "P404 #1 · CH3"
     assert light.device_info["identifiers"] == {
         ("coselig_modbus_hub", "entry_slave_1_ch3")
     }

@@ -115,6 +115,19 @@ async def test_real_ha_platform_and_registry(hass, entry, gateway):
     assert {child.parent_device_id for child in children} == {
         parent.id for parent in parents
     }
+    child_names = {next(iter(child.identifiers)): child.name for child in children}
+    assert child_names == {
+        (DOMAIN, entity.unique_id): (
+            "P404 #1 · " + entity.unique_id.rsplit("_", 1)[-1].upper()
+            if "_slave_1_" in entity.unique_id
+            else "P210 #3 · " + entity.unique_id.rsplit("_", 1)[-1].upper()
+        )
+        for entity in entities
+    }
+    assert {
+        hass.states.get(entity.entity_id).attributes["friendly_name"]
+        for entity in entities
+    } == set(child_names.values())
     assert all(
         not hasattr(child, "manufacturer") and not hasattr(child, "model")
         for child in children
@@ -207,6 +220,91 @@ async def test_v112_registry_migrates_parent_entities_to_children(hass, entry, g
         (DOMAIN, unique_id) for unique_id in old_entities
     }
     assert {child.parent_device_id for child in children} == set(parent_ids.values())
+    old_entity_ids = {entity_id for entity_id, *_ in old_entities.values()}
+    old_child_ids = {next(iter(child.identifiers)): child.id for child in children}
+    assert await hass.config_entries.async_reload(entry.entry_id)
+    await hass.async_block_till_done()
+    assert {
+        entity.entity_id
+        for entity in er.async_entries_for_config_entry(entity_registry, entry.entry_id)
+    } == old_entity_ids
+    reloaded_children = dr.async_child_entries_for_config_entry(
+        device_registry, entry.entry_id
+    )
+    assert {
+        next(iter(child.identifiers)): child.id for child in reloaded_children
+    } == old_child_ids
+    for unique_id, (
+        entity_id,
+        custom_name,
+        area_id,
+        _parent_id,
+    ) in old_entities.items():
+        current = entity_registry.async_get(entity_id)
+        assert current is not None
+        assert current.unique_id == unique_id
+        assert current.name == custom_name
+        assert current.area_id == area_id
+    assert await hass.config_entries.async_unload(entry.entry_id)
+
+
+async def test_v120_default_names_migrate_without_duplicate_entities(
+    hass, entry, gateway
+):
+    """v1.2.0 default names become prefixed without changing registry IDs."""
+    hass.config_entries.async_update_entry(
+        entry, data={"host": "127.0.0.1", "port": gateway.port}
+    )
+    entity_registry = er.async_get(hass)
+    device_registry = dr.async_get(hass)
+    old_entity_ids: dict[str, str] = {}
+    for configured in (Device(1, Model.P404), Device(3, Model.P210)):
+        parent = device_registry.async_get_or_create(
+            config_entry_id=entry.entry_id,
+            identifiers={(DOMAIN, f"{entry.entry_id}_slave_{configured.slave}")},
+            name=f"Coselig {configured.model.value.upper()} #{configured.slave:02d}",
+            manufacturer="Coselig",
+            model=configured.model.value.upper(),
+        )
+        for output in configured.outputs:
+            unique_id = output.unique_id(entry.entry_id, configured.slave)
+            child = device_registry.async_get_or_create_child(
+                config_entry_id=entry.entry_id,
+                identifiers={(DOMAIN, unique_id)},
+                name=output.name,
+                parent_device_id=parent.id,
+            )
+            entity = entity_registry.async_get_or_create(
+                "light",
+                DOMAIN,
+                unique_id,
+                config_entry=entry,
+                device_id=child.id,
+                has_entity_name=True,
+                original_name=output.name,
+            )
+            old_entity_ids[unique_id] = entity.entity_id
+
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+    entities = er.async_entries_for_config_entry(entity_registry, entry.entry_id)
+    assert len(entities) == len(old_entity_ids)
+    assert {entity.unique_id: entity.entity_id for entity in entities} == old_entity_ids
+    children = dr.async_child_entries_for_config_entry(device_registry, entry.entry_id)
+    assert {next(iter(child.identifiers)): child.name for child in children} == {
+        (DOMAIN, unique_id): (
+            "P404 #1 · " + unique_id.rsplit("_", 1)[-1].upper()
+            if "_slave_1_" in unique_id
+            else "P210 #3 · " + unique_id.rsplit("_", 1)[-1].upper()
+        )
+        for unique_id in old_entity_ids
+    }
+    assert len({entity.unique_id for entity in entities}) == len(old_entity_ids)
+    assert all(entity.name is None for entity in entities)
+    assert {
+        hass.states.get(entity.entity_id).attributes["friendly_name"]
+        for entity in entities
+    } == {child.name for child in children}
     assert await hass.config_entries.async_unload(entry.entry_id)
 
 
@@ -235,6 +333,11 @@ async def test_cct_outputs_register_as_group_children(hass, entry, gateway):
     )
     assert {identifier for child in children for identifier in child.identifiers} == {
         (DOMAIN, entity.unique_id) for entity in entities
+    }
+    assert {next(iter(child.identifiers)): child.name for child in children} == {
+        (DOMAIN, f"{entry.entry_id}_slave_1_group_a"): "P404 #1 · 雙色溫 A",
+        (DOMAIN, f"{entry.entry_id}_slave_1_group_b"): "P404 #1 · 雙色溫 B",
+        (DOMAIN, f"{entry.entry_id}_slave_3_group_a"): "P210 #3 · 雙色溫 A",
     }
     assert await hass.config_entries.async_unload(entry.entry_id)
 

@@ -1,4 +1,4 @@
-# Coselig Modbus Hub v1.2.0
+# Coselig Modbus Hub v1.2.1
 
 將 Coselig **P404／P210** 透過 TCP／RS485 Gateway 加入 Home Assistant，直接建立 Native LightEntity。設備與連線設定全走 HA 原生介面；不需要 MQTT、Node-RED 或 YAML。新增的唯讀 Modbus Monitor 只顯示通訊封包，不提供設備管理或寫入工具。
 
@@ -7,7 +7,7 @@ P404 / P210 → RS485 → TCP Gateway → RTU Transport → Coordinator → Nati
                                     └→ Memory Trace → Read-only Monitor
 ```
 
-套件 **1.2.0**，domain `coselig_modbus_hub`，Config Entry schema `2.1`。最低 HA Core **2026.10.0**；本機測試使用 **2026.10.1／Python 3.14.7**。
+套件 **1.2.1**，domain `coselig_modbus_hub`，Config Entry schema `2.1`。最低 HA Core **2026.10.0**；本機測試使用 **2026.10.1／Python 3.14.7**。
 
 ## 安裝與第一次設定
 
@@ -122,6 +122,8 @@ Round time 從取得輪詢 lock、開始第一個 configured Slave 到本輪最�
 
 **v1.1.2 → v1.2.0**：保留既有 Parent Device、entity_id、unique_id、名稱與 Area。重新載入後 HA 會為每個有效輸出建立原生 Child Device，不需刪除整合或重新加入設備。
 
+**v1.2.0 → v1.2.1**：更新 Child Device 預設名稱為 `P404 #51 · CH1`、`P210 #62 · 雙色溫 A` 等完整名稱；既有 entity_id、unique_id、名稱與 Area 保留，不需刪除或重新加入設備。
+
 **v0.2.x → v1.x** 仍是 Clean Break：先備份 HA，移除舊 Entry，更新、重啟並重新新增。舊 MQTT retained Discovery／實體／自動化需自行檢查清理；新版不連 broker。正式切換前停用寫入相同設備的舊流程。
 
 - 使用帶 CRC 的 RTU over TCP，不是 MBAP Modbus TCP。
@@ -143,4 +145,4 @@ node --test tests/frontend/monitor.test.cjs
 
 Python 測試直接使用正式 custom component、HA APIs 與 loopback Gateway；前端以 Node 內建 runner 獨立測試，不計入 Python coverage。Config Flow 行／分支要求100%，整體 coverage≥99%。
 
-詳見 [v1.2.0 發布說明](docs/v1.2.0-release-notes.md)、[v1.1.2 發布說明](docs/v1.1.2-release-notes.md)、[v1.1.1 發布說明](docs/v1.1.1-release-notes.md)、[v1.1 實作與發布報告](docs/v1.1-implementation-report.md)、[開發架構](docs/development.md)、[實機驗收清單](docs/v1.0-acceptance.md)。**尚未完成 24～48 小時實機 soak test，測試通過不代表現場全部功能已驗收。**
+詳見 [v1.2.1 發布說明](docs/v1.2.1-release-notes.md)、[v1.2.0 發布說明](docs/v1.2.0-release-notes.md)、[v1.1.2 發布說明](docs/v1.1.2-release-notes.md)、[v1.1.1 發布說明](docs/v1.1.1-release-notes.md)、[v1.1 實作與發布報告](docs/v1.1-implementation-report.md)、[開發架構](docs/development.md)、[實機驗收清單](docs/v1.0-acceptance.md)。**尚未完成 24～48 小時實機 soak test，測試通過不代表現場全部功能已驗收。**

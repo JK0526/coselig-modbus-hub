@@ -66,11 +66,14 @@ class CoseligLight(CoordinatorEntity[Coordinator], LightEntity):
     ) -> None:
         super().__init__(coordinator)
         self.device, self.output = device, output
-        self._attr_name = output.name
+        # The child device carries the complete user-facing default name.  Leaving
+        # the entity unnamed lets HA render that name once instead of appending a
+        # second ``CH1``/``雙色溫 A`` suffix.
+        self._attr_name = None
         self._attr_unique_id = output.unique_id(entry_id, device.slave)
         self._attr_device_info: ChildDeviceInfo = ChildDeviceInfo(
             identifiers={(DOMAIN, self._attr_unique_id)},
-            name=output.name,
+            name=f"{device.model.value.upper()} #{device.slave} · {output.name}",
             parent_device_id=parent_device_id,
         )
         mode = ColorMode.COLOR_TEMP if output.cct else ColorMode.BRIGHTNESS
