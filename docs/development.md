@@ -1,6 +1,6 @@
-# v1.4.0-beta.2 開發與維護指南
+# v1.4.0 開發與維護指南
 
-更新：2026-10-15。本文描述 v1.4.0-beta.2 架構、Runtime 行為、維護界線與可重現驗證方式。S402 與既有 Poll／Control 的硬體共存仍待驗收。使用者操作請看 [README](../README.md)；版本差異以 [GitHub Releases](https://github.com/JK0526/coselig-modbus-hub/releases) 與各版 Release Notes 為準。歷史問題盤點保留在 `docs/specs/`，不作新版規範。
+更新：2026-10-15。本文描述 v1.4.0 架構、Runtime 行為、維護界線與可重現驗證方式。S402 實機驗收已依已回報項目通過並核准 v1.4.0 發布；未回報的硬體情境列於 [S402 驗收紀錄](v1.4.0-s402-acceptance.md)。使用者操作請看 [README](../README.md)；版本差異以 [GitHub Releases](https://github.com/JK0526/coselig-modbus-hub/releases) 與各版 Release Notes 為準。歷史問題盤點保留在 `docs/specs/`，不作新版規範。
 
 ## 架構與模組責任
 
@@ -117,7 +117,7 @@ Monitor 的「暫停輪詢」只改 Coordinator 的執行期狀態，不寫入 C
 
 開發依賴由 `pyproject.toml`／`uv.lock` 固定。基準環境：Home Assistant **2026.10.1**、Python **3.14.7**、pytest-homeassistant-custom-component **0.13.372**。v1.3.3 基線：**440 Python tests、36 frontend tests、99.57% branch coverage**；Config Flow line／branch coverage 要求 100%。
 
-v1.4.0-beta.2 自動驗證結果：**520 Python tests、39 frontend tests、99.75% branch coverage、Config Flow line／branch coverage 100%**。S402 實機與既有 Poll／Control 共存仍是 Pending，自動測試不代表硬體驗收通過。
+v1.4.0 自動驗證結果：**520 Python tests、39 frontend tests、99.75% branch coverage、Config Flow line／branch coverage 100%**。S402 實機驗收結果與未確認情境分列於 [驗收紀錄](v1.4.0-s402-acceptance.md)；自動測試不作為硬體驗收證據。
 
 本機檢查命令：
 

@@ -783,7 +783,7 @@ wheels = [
 
 [[package]]
 name = "coselig-modbus-hub"
-version = "1.4.0b2"
+version = "1.4.0"
 source = { virtual = "." }
 
 [package.dev-dependencies]

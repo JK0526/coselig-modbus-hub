@@ -2,7 +2,7 @@
 
 將 Coselig P404、P210、R410 與 S402，透過 RS485 → TCP Gateway 原生整合進 Home Assistant。整合建立原生 Light／Switch／Event 與 Device，使用 Home Assistant Config Flow 設定，無需 MQTT、Node-RED 或 YAML，並內建管理員限定的 Modbus Monitor。
 
-目前測試版本：**v1.4.0-beta.2**（S402 實機共存驗收中）。Config Entry schema 維持 **2.1**。
+目前版本：**v1.4.0 Stable**。S402 硬體驗收已通過並核准正式發布。Config Entry schema 維持 **2.1**。
 
 ## 功能特色
 
@@ -39,7 +39,7 @@ P404 的 Group A 對應 CH1／CH2，Group B 對應 CH3／CH4；每組可設成�
 
 1. 在 HACS 開啟 **自訂儲存庫**，加入 [JK0526/coselig-modbus-hub](https://github.com/JK0526/coselig-modbus-hub)，類型選 **Integration**。
 2. 安裝 Coselig Modbus Hub，並依 Home Assistant 提示重新啟動。
-3. 本專案以 GitHub Release 提供更新；目前不是 HACS 預設儲存庫中的整合。Beta 預發布版本需在 HACS 該儲存庫啟用預發布版本更新，才會納入更新檢查。
+3. 本專案以 GitHub Release 提供更新；目前不是 HACS 預設儲存庫中的整合。穩定版會透過 HACS 一般更新檢查提供；只有要接收 Beta 時才需啟用預發布版本更新。
 
 ## 第一次設定
 
@@ -124,13 +124,13 @@ Backend TraceBuffer 保留最多 **200 筆**，目前頁面另暫存最多 **100
 
 ## 更新
 
-HACS 會依 GitHub Release 提供可更新版本；若要安裝本次 Beta，請在 HACS 該 Repository 啟用 **預發布版本（pre-release）**更新。更新後請閱讀該版本的 Release Notes，依說明決定是否需要 reload 或重新啟動 Home Assistant。v1.4.0-beta.2 的 Config Entry schema 維持 2.1，不需只為更新版本而刪除並重建整合。此 Beta 尚待 S402 與 Poll／Control 共存的實機驗收。
+HACS 會依 GitHub Release 提供可更新版本。v1.4.0 是正式穩定版，不需啟用預發布版本更新即可取得。更新後請閱讀該版本的 Release Notes，依說明決定是否需要 reload 或重新啟動 Home Assistant。v1.4.0 的 Config Entry schema 維持 2.1，不需只為更新版本而刪除並重建整合。
 
 ## 開發與驗收文件
 
 - [開發與維護指南](docs/development.md)
 - [v1.3.3 Release Notes](docs/v1.3.3-release-notes.md)
-- [v1.4.0-beta.2 Release Notes](docs/v1.4.0-beta.2-release-notes.md)
+- [v1.4.0 Release Notes](docs/v1.4.0-release-notes.md)
 - [S402 實機驗收清單](docs/v1.4.0-s402-acceptance.md)
 - [架構文件](docs/v1.3.0-architecture.md)
 - [實機驗收清單](docs/v1.0-acceptance.md)
