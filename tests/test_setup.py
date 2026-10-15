@@ -119,7 +119,12 @@ async def test_s402_only_gateway_event_entities_availability_and_reload_lifecycl
     assert await hass.config_entries.async_reload(entry.entry_id)
     await hass.async_block_till_done()
     state_changes.clear()
-    writer = next(writer for writer in gateway.writers if not writer.is_closing())
+    for _ in range(20):
+        writers = [writer for writer in gateway.writers if not writer.is_closing()]
+        if writers:
+            break
+        await asyncio.sleep(0.01)
+    writer = next(iter(writers))
     writer.write(frame(bytes([1, 6, 1, 0xA0, 7, 4])))
     await writer.drain()
     for _ in range(20):

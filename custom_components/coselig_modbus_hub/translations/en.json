@@ -80,7 +80,65 @@
       },
       "device_management": {
         "title": "Device management",
-        "menu_options": {"add_devices": "Add / search devices", "edit_devices": "Modify an existing device", "remove_devices": "Remove devices", "back_to_options": "Back to settings"}
+        "menu_options": {"add_devices": "Add / search devices", "edit_devices": "Modify an existing device", "remove_devices": "Remove devices", "s402_management": "S402 scene inputs", "r410_cover_management": "R410 Cover outputs", "back_to_options": "Back to settings"}
+      },
+      "r410_cover_management": {
+        "title": "R410 Cover outputs",
+        "description": "{allocations}",
+        "menu_options": {"add_r410_cover": "Add Cover", "edit_r410_cover": "Edit Cover", "remove_r410_cover": "Remove Cover", "back_to_device_management": "Back to device management"}
+      },
+      "add_r410_cover": {
+        "title": "Add R410 Cover",
+        "description": "{reason}",
+        "data": {"slave": "R410 device"},
+        "menu_options": {"back_to_r410_cover_management": "Back to R410 Covers"}
+      },
+      "edit_r410_cover": {
+        "title": "Edit R410 Cover",
+        "data": {"id": "Cover"},
+        "menu_options": {"back_to_r410_cover_management": "Back to R410 Covers"}
+      },
+      "cover_name": {
+        "title": "Cover name",
+        "description": "The Cover sends momentary commands to an external dry-contact controller.",
+        "data": {"name": "Name"}
+      },
+      "cover_class": {
+        "title": "Cover device class",
+        "description": "Choose a Home Assistant Cover device class, or leave it blank for a generic Cover.",
+        "data": {"device_class": "Device class"}
+      },
+      "cover_mode": {
+        "title": "Cover relay mode",
+        "description": "Relay numbers can be selected freely; they do not need to be consecutive.",
+        "data": {"mode": "Control mode"},
+        "options": {"two_relay": "Two-relay: Open / Close; Stop uses both", "three_relay": "Three-relay: Open / Stop / Close"}
+      },
+      "cover_mapping": {
+        "title": "Cover relay mapping",
+        "description": "Only unused Relay outputs (plus this Cover's current outputs when editing) are available.",
+        "data": {"open_relay": "Open Relay", "stop_relay": "Stop Relay", "close_relay": "Close Relay"}
+      },
+      "cover_pulse": {
+        "title": "Momentary pulse duration",
+        "description": "R410 hardware owns the timer. The integration sends one FC06 command and does not wait for the pulse.",
+        "data": {"pulse_seconds": "Pulse (seconds)"}
+      },
+      "cover_summary": {
+        "title": "Confirm R410 Cover",
+        "description": "{summary}\n\n{resource_change}\n\nOnly confirmation saves this Cover allocation.",
+        "menu_options": {"confirm_cover": "Confirm", "cancel_cover": "Cancel"}
+      },
+      "remove_r410_cover": {
+        "title": "Remove R410 Cover",
+        "description": "Cover Relay resources return to normal Switch use after confirmation.",
+        "data": {"id": "Cover"},
+        "menu_options": {"back_to_r410_cover_management": "Back to R410 Covers"}
+      },
+      "remove_cover_summary": {
+        "title": "Confirm Cover removal",
+        "description": "Remove {name} from R410 #{slave}?\n\nThe following Relay outputs will return to normal Switch use: {relays}.",
+        "menu_options": {"confirm_remove_cover": "Confirm removal", "cancel_remove_cover": "Cancel"}
       },
       "communication": {
         "title": "Communication settings",
@@ -136,7 +194,7 @@
       },
       "edit_summary": {
         "title": "Confirm device changes",
-        "description": "{summary}\n\nSettings are saved only after confirmation.",
+        "description": "{summary}\n\n{cover_removals}\n\nSettings are saved only after confirmation.",
         "menu_options": {"confirm_edit": "Confirm changes", "cancel_edit": "Cancel"}
       },
       "remove_devices": {
@@ -147,7 +205,7 @@
       },
       "remove_summary": {
         "title": "Confirm device removal",
-        "description": "Devices to remove:\n{devices}\n\nTheir Integration Entities, Child Devices and Parent Devices will be removed after reload and registry cleanup.",
+        "description": "Devices to remove:\n{devices}\n\nCovers removed with these R410 devices:\n{covers}\n\nTheir Integration Entities, Child Devices and Parent Devices will be removed after reload and registry cleanup.",
         "menu_options": {"confirm_remove": "Confirm removal", "cancel_remove": "Cancel"}
       }
     },
@@ -155,8 +213,19 @@
       "invalid_range": "Start must not exceed end.",
       "invalid_poll_interval": "Interval must be 0 or at least 0.5 seconds.",
       "no_devices": "Select at least one new device to add.",
-      "no_devices_to_remove": "Select at least one device to remove."
+      "no_devices_to_remove": "Select at least one device to remove.",
+      "cover_r410_unavailable": "Choose an R410 with at least two unallocated Relays.",
+      "invalid_cover_name": "Enter a non-empty Cover name.",
+      "invalid_cover_device_class": "Choose a valid Home Assistant Cover device class or leave it blank.",
+      "invalid_cover_mode": "Choose a valid two-relay or three-relay mode.",
+      "insufficient_cover_relays": "At least 2 unused Relays are required; three-relay mode requires 3.",
+      "invalid_cover_relays": "Choose distinct unused Relays for this Cover.",
+      "invalid_cover_pulse": "Pulse duration must be 0.1–25.0 seconds in 0.1-second steps.",
+      "cover_not_found": "This Cover no longer exists. Return to Cover management and try again."
     },
-    "progress": {"scan": "Scanning {current}/{total}; found {found} devices."}
+    "progress": {"scan": "Scanning {current}/{total}; found {found} devices."},
+    "abort": {
+      "invalid_stored_options": "Stored device or R410 Cover settings are invalid. Correct the options before continuing."
+    }
   }
 }

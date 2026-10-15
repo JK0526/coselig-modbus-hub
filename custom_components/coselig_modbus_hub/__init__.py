@@ -12,11 +12,17 @@ from homeassistant.helpers import entity_registry as er
 from .const import DEFAULT_POLL_INTERVAL, DOMAIN
 from .hub import Hub
 from .models import Device, devices_from_options
+from .r410_cover import (
+    R410CoverConfigError,
+    expected_cover_unique_ids,
+    expected_physical_output_unique_ids,
+    r410_covers_from_options,
+)
 from .s402 import s402_devices_from_options
 
 type CoseligConfigEntry = ConfigEntry[Hub]
 
-PLATFORMS = [Platform.LIGHT, Platform.SWITCH, Platform.EVENT]
+PLATFORMS = [Platform.LIGHT, Platform.SWITCH, Platform.EVENT, Platform.COVER]
 
 
 def ensure_parent_device(
@@ -59,11 +65,9 @@ def prune_registries(hass: HomeAssistant, entry: CoseligConfigEntry) -> None:
     """Remove only obsolete integration outputs; keep surviving user metadata."""
     devices = devices_from_options(entry.options)
     s402_ids = s402_devices_from_options(dict(entry.options))
-    expected = {
-        output.unique_id(entry.entry_id, device.slave)
-        for device in devices
-        for output in device.outputs
-    }
+    covers = r410_covers_from_options(dict(entry.options), devices)
+    expected = expected_physical_output_unique_ids(entry.entry_id, devices)
+    expected.update(expected_cover_unique_ids(entry.entry_id, covers))
     expected.update(
         f"{entry.entry_id}_s402_{device_id}_di{di}"
         for device_id in s402_ids
@@ -103,13 +107,21 @@ async def async_setup_entry(hass: HomeAssistant, entry: CoseligConfigEntry) -> b
         raise ConfigEntryError(
             "v1.0 requires a new config entry; remove the legacy entry and add again"
         )
+    try:
+        devices = devices_from_options(entry.options)
+        covers = r410_covers_from_options(dict(entry.options), devices)
+    except (R410CoverConfigError, KeyError, ValueError, TypeError) as error:
+        raise ConfigEntryError(
+            "Stored device or R410 Cover options are invalid; edit the integration options before retrying."
+        ) from error
     hub = Hub.create(
         hass,
         entry.data["host"],
         entry.data["port"],
-        devices_from_options(entry.options),
+        devices,
         entry.options.get("poll_interval", DEFAULT_POLL_INTERVAL),
         s402_devices_from_options(dict(entry.options)),
+        covers,
     )
     try:
         await hub.start()

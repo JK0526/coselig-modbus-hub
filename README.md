@@ -2,12 +2,13 @@
 
 將 Coselig P404、P210、R410 與 S402，透過 RS485 → TCP Gateway 原生整合進 Home Assistant。整合建立原生 Light／Switch／Event 與 Device，使用 Home Assistant Config Flow 設定，無需 MQTT、Node-RED 或 YAML，並內建管理員限定的 Modbus Monitor。
 
-目前版本：**v1.4.0 Stable**。S402 硬體驗收已通過並核准正式發布。Config Entry schema 維持 **2.1**。
+目前開發版本：**v1.5.0-beta.1 Beta**（R410 Cover 硬體驗收待完成）；最新 stable 仍是 **v1.4.0**。Config Entry schema 維持 **2.1**。
 
 ## 功能特色
 
 - 支援 P404／P210 PWM Dimmer 與 R410 Relay。
 - 支援 S402 四路 DI 單擊場景事件，使用 Home Assistant EventEntity。
+- 支援 R410 瞬時 Relay 控制 Cover，提供兩路與三路模式、Relay 自由映射及每組 Cover 獨立脈衝時間。
 - 依使用者設定的 Slave ID 範圍搜尋 Modbus 設備。
 - 建立原生 Home Assistant Device、Light 與 Switch。
 - 可修改既有設備型號與輸出模式，也可個別移除設備。
@@ -22,7 +23,7 @@
 | --- | --- | --- |
 | Coselig P404 | Light | CH1、CH2、CH3、CH4；或雙色溫 A、雙色溫 B |
 | Coselig P210 | Light | CH1、CH2；或雙色溫 A |
-| Coselig R410 | Switch | Relay 1–4 |
+| Coselig R410 | Switch／Cover | Relay 1–4；可將未使用 Relay 配置為瞬時 Cover 控制 |
 | Coselig S402 | Event | DI1–DI4 單擊事件（`PRESS_END`） |
 
 P404 的 Group A 對應 CH1／CH2，Group B 對應 CH3／CH4；每組可設成兩路單獨調光或一組雙色溫。P210 只有 Group A。R410 的 DI 目前不提供實體。S402 的 DI 是無狀態單擊事件，不輪詢，也不代表 S402 在線健康狀態。
@@ -65,6 +66,14 @@ S402 ID 與 Modbus Slave 位址屬於不同位址空間。啟用 S402 4x 模式�
 
 使用者可在 Home Assistant 的實體設定中自訂名稱與 Area；修改其他設備或重新載入整合不會覆寫這些設定。
 
+## R410 Momentary Cover（Beta）
+
+R410 可透過硬體 Momentary 功能，對外部窗簾、捲門或車庫門控制器的**乾接點瞬時輸入**送出 OPEN、STOP、CLOSE 命令。這項功能只模擬按鈕脈衝；外部控制器必須負責馬達安全、方向互鎖、障礙物偵測與行程限位。**不可將 R410 Cover 用作直接切換市電馬達正反轉的控制器。**
+
+每個 Cover 可選兩路模式（OPEN 與 CLOSE 各使用一個 Relay，STOP 自動同時觸發兩者）或三路模式（OPEN、STOP、CLOSE 各使用一個 Relay）。Relay 可任意選擇，不必連續排列；未配置給 Cover 的 R410 Relay 仍作為一般 Switch。每個 Cover 可設定 0.1–25.0 秒脈衝時間，預設 0.5 秒，由 R410 硬體計時。
+
+此 Cover 是命令介面，沒有位置回授：Home Assistant 不會推測開啟、關閉、移動狀態或位置。v1.5.0-beta.1 的實機共存與硬體行為仍待驗收，請依 [硬體驗收清單](docs/v1.5.0-r410-cover-acceptance.md) 記錄結果。
+
 ## 輪詢設定
 
 預設背景輪詢週期為 **2 秒**，可在 **選項 → 通訊設定 → 輪詢週期**調整。設定為 0 時：
@@ -98,6 +107,7 @@ Backend TraceBuffer 保留最多 **200 筆**，目前頁面另暫存最多 **100
 
 - P404／P210 無法由協議可靠自動區分，請在設定時指定正確型號。
 - R410 DI inputs currently not exposed.
+- R410 Momentary Cover 沒有位置回授，狀態保持 unknown；方向控制、安全與限位由外部乾接點控制器負責。v1.5.0-beta.1 的實機驗收仍待完成。
 - S402 只提供四路 DI 單擊事件；不提供按下／放開、雙擊或長按事件，也無法推斷單顆 S402 的在線狀態。
 - S402 4x 模式會保留普通 Modbus Slave #1；同一 Gateway／Bus 不得同時設定普通 Slave #1。
 - R410 DI 目前不提供實體。
@@ -124,7 +134,7 @@ Backend TraceBuffer 保留最多 **200 筆**，目前頁面另暫存最多 **100
 
 ## 更新
 
-HACS 會依 GitHub Release 提供可更新版本。v1.4.0 是正式穩定版，不需啟用預發布版本更新即可取得。更新後請閱讀該版本的 Release Notes，依說明決定是否需要 reload 或重新啟動 Home Assistant。v1.4.0 的 Config Entry schema 維持 2.1，不需只為更新版本而刪除並重建整合。
+HACS 會依 GitHub Release 提供可更新版本。v1.4.0 仍是正式穩定版；要安裝 v1.5.0-beta.1，請在 HACS 啟用預發布版本更新。beta 只供 R410 硬體驗收，不能視為 v1.5.0 stable。更新前請閱讀該版 Release Notes；Config Entry schema 維持 2.1，不需只為更新版本而刪除並重建整合。
 
 ## 開發與驗收文件
 
@@ -132,6 +142,8 @@ HACS 會依 GitHub Release 提供可更新版本。v1.4.0 是正式穩定版，�
 - [v1.3.3 Release Notes](docs/v1.3.3-release-notes.md)
 - [v1.4.0 Release Notes](docs/v1.4.0-release-notes.md)
 - [S402 實機驗收清單](docs/v1.4.0-s402-acceptance.md)
+- [v1.5.0-beta.1 Release Notes](docs/v1.5.0-beta.1-release-notes.md)
+- [R410 Cover 實機驗收清單](docs/v1.5.0-r410-cover-acceptance.md)
 - [架構文件](docs/v1.3.0-architecture.md)
 - [實機驗收清單](docs/v1.0-acceptance.md)
 - [所有 GitHub Releases](https://github.com/JK0526/coselig-modbus-hub/releases)

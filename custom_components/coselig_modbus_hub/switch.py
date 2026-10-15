@@ -19,6 +19,7 @@ from .coordinator import Coordinator
 from .models import Device
 from .profiles import OutputSpec
 from .protocol import ProtocolError
+from .r410_cover import occupied_relays
 
 
 async def async_setup_entry(
@@ -31,6 +32,7 @@ async def async_setup_entry(
         if Platform.SWITCH not in device.profile.supported_platforms:
             continue
         parent = ensure_parent_device(hass, entry, device)
+        cover_relays = occupied_relays(entry.runtime_data.r410_covers, device.slave)
         entities.extend(
             CoseligSwitch(
                 entry.runtime_data.coordinator,
@@ -41,6 +43,7 @@ async def async_setup_entry(
             )
             for output in device.outputs
             if output.platform == Platform.SWITCH
+            and output.registers[0] + 1 not in cover_relays
         )
     async_add_entities(entities)
 

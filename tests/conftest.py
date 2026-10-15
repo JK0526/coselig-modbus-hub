@@ -40,6 +40,7 @@ class Gateway:
     requests: list[bytes] = field(default_factory=list)
     modes: dict[int, str] = field(default_factory=dict)
     registers: dict[int, list[int]] = field(default_factory=dict)
+    register_writes: list[tuple[int, int, int]] = field(default_factory=list)
     coils: dict[int, list[bool]] = field(default_factory=dict)
     families: dict[int, str] = field(default_factory=dict)
     probe_modes: dict[tuple[int, int, int], str] = field(default_factory=dict)
@@ -75,7 +76,11 @@ class Gateway:
                 coils = self.coils.setdefault(request[0], [True, False, True, False])
                 family = self.families.get(request[0], "dimmer")
                 if function == 6:
-                    regs[address - 0x082A] = request[5]
+                    value = int.from_bytes(request[4:6], "big")
+                    self.register_writes.append((request[0], address, value))
+                    if 0x082A <= address <= 0x082D:
+                        # P404/P210 expose the low byte as the raw brightness value.
+                        regs[address - 0x082A] = value & 0xFF
                     response = request
                 elif function == 5:
                     coils[address] = request[4:6] == b"\xff\x00"

@@ -2,6 +2,7 @@
 
 import asyncio
 from unittest.mock import AsyncMock, patch
+from uuid import uuid4
 
 import pytest
 from homeassistant.data_entry_flow import FlowResultType
@@ -17,6 +18,7 @@ from custom_components.coselig_modbus_hub.const import DOMAIN
 from custom_components.coselig_modbus_hub.hub import Hub
 from custom_components.coselig_modbus_hub.models import Device, GroupMode, Model
 from custom_components.coselig_modbus_hub.profiles import DeviceFamily
+from custom_components.coselig_modbus_hub.r410_cover import R410CoverMode
 from custom_components.coselig_modbus_hub.scanner import ScanResult
 from custom_components.coselig_modbus_hub.transport import GatewayError
 
@@ -503,6 +505,7 @@ async def test_options_menus_and_add_only_new_with_confirmation(options, entry, 
         "edit_devices",
         "remove_devices",
         "s402_management",
+        "r410_cover_management",
         "back_to_options",
     ]
     assert (await options.async_step_communication())["menu_options"] == [
@@ -789,6 +792,7 @@ async def test_native_options_save_after_explicit_add_confirmation(hass, entry):
             "edit_devices",
             "remove_devices",
             "s402_management",
+            "r410_cover_management",
             "back_to_options",
         ]
         result = await hass.config_entries.options.async_configure(
@@ -1046,3 +1050,529 @@ async def test_user_validation_errors_and_reconfigure(flow, entry):
         assert (await flow.async_step_reconfigure({"host": "gateway", "port": 502}))[
             "errors"
         ] == {"base": "cannot_connect"}
+
+
+def _cover_options(slave=63, *, mode="two_relay", open_relay=1, close_relay=2):
+    cover = {
+        "id": uuid4().hex,
+        "slave": slave,
+        "name": "Garage",
+        "device_class": "garage",
+        "mode": mode,
+        "open_relay": open_relay,
+        "close_relay": close_relay,
+        "pulse_tenths": 5,
+        "future_cover_setting": "keep",
+    }
+    if mode == "three_relay":
+        cover["stop_relay"] = 3
+    return cover
+
+
+async def _start_add_cover(options):
+    await options.async_step_device_management()
+    await options.async_step_r410_cover_management()
+    await options.async_step_add_r410_cover()
+    return await options.async_step_add_r410_cover({"slave": "63"})
+
+
+async def _continue_add_cover(options, *, mode="two_relay", mapping=None, pulse=0.5):
+    await options.async_step_cover_name({"name": "車庫鐵捲門"})
+    await options.async_step_cover_class({})
+    await options.async_step_cover_mode({"mode": mode})
+    await options.async_step_cover_mapping(
+        mapping or {"open_relay": "4", "close_relay": "1"}
+    )
+    await options.async_step_cover_pulse({"pulse_seconds": pulse})
+    return await options.async_step_cover_summary()
+
+
+async def test_add_two_relay_cover_free_mapping_validation_and_cancel_atomic(
+    options, entry, hass
+):
+    original = {
+        **entry.options,
+        "devices": [{"slave": 63, "model": "r410"}],
+        "future_option": {"keep": True},
+    }
+    hass.config_entries.async_update_entry(entry, options=original)
+    await _options_ready(options)
+    assert (await options.async_step_r410_cover_management())["menu_options"] == [
+        "add_r410_cover",
+        "back_to_device_management",
+    ]
+    await options.async_step_add_r410_cover()
+    assert (await options.async_step_add_r410_cover({"slave": "bad"}))["errors"] == {
+        "slave": "cover_r410_unavailable"
+    }
+    assert (await options.async_step_add_r410_cover({"slave": "99"}))["errors"] == {
+        "slave": "cover_r410_unavailable"
+    }
+    assert (await options.async_step_add_r410_cover({"slave": "63"}))[
+        "step_id"
+    ] == "cover_name"
+    assert (await options.async_step_cover_name({"name": "  "}))["errors"] == {
+        "name": "invalid_cover_name"
+    }
+    assert (await options.async_step_cover_name({"name": "車庫"}))[
+        "step_id"
+    ] == "cover_class"
+    class_schema = (await options.async_step_cover_class())["data_schema"]
+    class_selector = next(iter(class_schema.schema.values()))
+    assert class_selector.config["domain"] == "cover"
+    assert (await options.async_step_cover_class({"device_class": "bad"}))[
+        "errors"
+    ] == {"device_class": "invalid_cover_device_class"}
+    assert (await options.async_step_cover_class({}))["step_id"] == "cover_mode"
+    assert (await options.async_step_cover_mode({"mode": "bad"}))["errors"] == {
+        "mode": "invalid_cover_mode"
+    }
+    await options.async_step_cover_mode({"mode": "two_relay"})
+    assert (await options.async_step_cover_mapping({"open_relay": "bad"}))[
+        "errors"
+    ] == {"base": "invalid_cover_relays"}
+    assert (
+        await options.async_step_cover_mapping({"open_relay": "1", "close_relay": "1"})
+    )["errors"] == {"base": "invalid_cover_relays"}
+    assert (
+        await options.async_step_cover_mapping({"open_relay": "4", "close_relay": "1"})
+    )["step_id"] == "cover_pulse"
+    assert (await options.async_step_cover_pulse({"pulse_seconds": 0}))["errors"] == {
+        "pulse_seconds": "invalid_cover_pulse"
+    }
+    assert (await options.async_step_cover_pulse({"pulse_seconds": 0.14}))[
+        "errors"
+    ] == {"pulse_seconds": "invalid_cover_pulse"}
+    assert (await options.async_step_cover_pulse({"pulse_seconds": "bad"}))[
+        "errors"
+    ] == {"pulse_seconds": "invalid_cover_pulse"}
+    result = await options.async_step_cover_pulse({"pulse_seconds": 0.5})
+    assert result["step_id"] == "cover_summary"
+    assert "停止：R4 + R1" in result["description_placeholders"]["summary"]
+    assert "R2、R3" in result["description_placeholders"]["resource_change"]
+    assert (await options.async_step_cancel_cover())[
+        "step_id"
+    ] == "r410_cover_management"
+    assert entry.options == original
+
+    await _start_add_cover(options)
+    await _continue_add_cover(options)
+    assert entry.options == original
+    result = await options.async_step_confirm_cover()
+    assert result["type"] == FlowResultType.CREATE_ENTRY
+    saved = result["data"]
+    assert saved["future_option"] == {"keep": True}
+    assert saved["r410_covers"][0]["mode"] == R410CoverMode.TWO_RELAY
+    assert saved["r410_covers"][0]["open_relay"] == 4
+    assert saved["r410_covers"][0]["close_relay"] == 1
+    assert "stop_relay" not in saved["r410_covers"][0]
+    assert saved["r410_covers"][0]["pulse_tenths"] == 5
+    assert len(saved["r410_covers"][0]["id"]) == 32
+
+
+async def test_add_three_relay_cover_custom_pulse(options, entry, hass):
+    hass.config_entries.async_update_entry(
+        entry,
+        options={**entry.options, "devices": [{"slave": 63, "model": "r410"}]},
+    )
+    await _options_ready(options)
+    await _start_add_cover(options)
+    await options.async_step_cover_name({"name": "Store shutter"})
+    await options.async_step_cover_class({"device_class": "shutter"})
+    await options.async_step_cover_mode({"mode": "three_relay"})
+    await options.async_step_cover_mapping(
+        {"open_relay": "3", "stop_relay": "1", "close_relay": "4"}
+    )
+    result = await options.async_step_cover_pulse({"pulse_seconds": 1.0})
+    assert result["step_id"] == "cover_summary"
+    saved = (await options.async_step_confirm_cover())["data"]["r410_covers"][0]
+    assert (saved["open_relay"], saved["stop_relay"], saved["close_relay"]) == (
+        3,
+        1,
+        4,
+    )
+    assert saved["pulse_tenths"] == 10
+
+
+async def test_edit_cover_retains_uuid_and_unknown_fields_across_mode_change(
+    options, entry, hass
+):
+    cover = _cover_options()
+    original = {
+        **entry.options,
+        "devices": [{"slave": 63, "model": "r410"}],
+        "r410_covers": [cover],
+        "future_option": [1, 2],
+    }
+    hass.config_entries.async_update_entry(entry, options=original)
+    await _options_ready(options)
+    await options.async_step_device_management()
+    result = await options.async_step_r410_cover_management()
+    assert "R2" in result["description_placeholders"]["allocations"]
+    await options.async_step_edit_r410_cover({"id": cover["id"]})
+    await options.async_step_cover_name({"name": "店面鐵捲門"})
+    await options.async_step_cover_class({"device_class": "shutter"})
+    await options.async_step_cover_mode({"mode": "three_relay"})
+    await options.async_step_cover_mapping(
+        {"open_relay": "3", "stop_relay": "1", "close_relay": "4"}
+    )
+    await options.async_step_cover_pulse({"pulse_seconds": 1.2})
+    summary = await options.async_step_cover_summary()
+    assert "R2" in summary["description_placeholders"]["resource_change"]
+    saved = (await options.async_step_confirm_cover())["data"]
+    updated = saved["r410_covers"][0]
+    assert updated["id"] == cover["id"]
+    assert updated["name"] == "店面鐵捲門"
+    assert updated["device_class"] == "shutter"
+    assert updated["mode"] == "three_relay"
+    assert updated["pulse_tenths"] == 12
+    assert updated["future_cover_setting"] == "keep"
+    assert saved["future_option"] == [1, 2]
+
+
+async def test_edit_three_relay_cover_to_two_drops_stop_relay(options, entry, hass):
+    cover = _cover_options(mode="three_relay")
+    original = {
+        **entry.options,
+        "devices": [{"slave": 63, "model": "r410"}],
+        "r410_covers": [cover],
+    }
+    hass.config_entries.async_update_entry(entry, options=original)
+    await _options_ready(options)
+    await options.async_step_edit_r410_cover({"id": cover["id"]})
+    await options.async_step_cover_name({"name": "Garage"})
+    await options.async_step_cover_class({"device_class": "garage"})
+    await options.async_step_cover_mode({"mode": "two_relay"})
+    await options.async_step_cover_mapping({"open_relay": "4", "close_relay": "2"})
+    await options.async_step_cover_pulse({"pulse_seconds": 0.5})
+    saved = (await options.async_step_confirm_cover())["data"]["r410_covers"][0]
+    assert saved["id"] == cover["id"]
+    assert saved["mode"] == "two_relay"
+    assert "stop_relay" not in saved
+
+
+async def test_three_relay_allocation_hides_add_when_only_one_relay_free(
+    options, entry, hass
+):
+    cover = _cover_options(mode="three_relay", open_relay=1, close_relay=3)
+    cover["stop_relay"] = 2
+    hass.config_entries.async_update_entry(
+        entry,
+        options={
+            **entry.options,
+            "devices": [{"slave": 63, "model": "r410"}],
+            "r410_covers": [cover],
+        },
+    )
+    await _options_ready(options)
+    result = await options.async_step_r410_cover_management()
+    assert "add_r410_cover" not in result["menu_options"]
+    assert "Relay 4" in result["description_placeholders"]["allocations"]
+    result = await options.async_step_add_r410_cover()
+    assert "至少需要 2 個未使用 Relay" in result["description_placeholders"]["reason"]
+
+
+async def test_remove_cover_requires_confirmation_and_restores_resources(
+    options, entry, hass
+):
+    cover = _cover_options()
+    original = {
+        **entry.options,
+        "devices": [{"slave": 63, "model": "r410"}],
+        "r410_covers": [cover],
+        "future_option": "preserve",
+    }
+    hass.config_entries.async_update_entry(entry, options=original)
+    await _options_ready(options)
+    assert (await options.async_step_remove_r410_cover())[
+        "step_id"
+    ] == "remove_r410_cover"
+    result = await options.async_step_remove_r410_cover({"id": cover["id"]})
+    assert result["step_id"] == "remove_cover_summary"
+    assert result["description_placeholders"]["relays"] == "R1、R2"
+    assert entry.options == original
+    assert (await options.async_step_cancel_remove_cover())[
+        "step_id"
+    ] == "r410_cover_management"
+    await options.async_step_remove_r410_cover({"id": cover["id"]})
+    result = await options.async_step_confirm_remove_cover()
+    assert result["data"]["r410_covers"] == []
+    assert result["data"]["future_option"] == "preserve"
+
+
+async def test_remove_one_cover_preserves_other_cover_record(options, entry, hass):
+    first = _cover_options()
+    second = _cover_options(slave=64, open_relay=3, close_relay=4)
+    original = {
+        **entry.options,
+        "devices": [
+            {"slave": 63, "model": "r410"},
+            {"slave": 64, "model": "r410"},
+        ],
+        "r410_covers": [first, second],
+    }
+    hass.config_entries.async_update_entry(entry, options=original)
+    await _options_ready(options)
+    await options.async_step_remove_r410_cover({"id": first["id"]})
+    result = await options.async_step_confirm_remove_cover()
+    assert result["data"]["r410_covers"] == [second]
+
+
+async def test_add_second_two_relay_cover_uses_remaining_free_relays(
+    options, entry, hass
+):
+    first = _cover_options()
+    original = {
+        **entry.options,
+        "devices": [{"slave": 63, "model": "r410"}],
+        "r410_covers": [first],
+    }
+    hass.config_entries.async_update_entry(entry, options=original)
+    await _options_ready(options)
+    await _start_add_cover(options)
+    result = await _continue_add_cover(
+        options, mapping={"open_relay": "4", "close_relay": "3"}
+    )
+    assert "一般 Switch：無" in result["description_placeholders"]["resource_change"]
+    saved = (await options.async_step_confirm_cover())["data"]
+    assert len(saved["r410_covers"]) == 2
+    assert {item["open_relay"] for item in saved["r410_covers"]} == {1, 4}
+
+
+async def test_cancel_edit_cover_does_not_persist(options, entry, hass):
+    cover = _cover_options()
+    original = {
+        **entry.options,
+        "devices": [{"slave": 63, "model": "r410"}],
+        "r410_covers": [cover],
+    }
+    hass.config_entries.async_update_entry(entry, options=original)
+    await _options_ready(options)
+    await options.async_step_edit_r410_cover({"id": cover["id"]})
+    await options.async_step_cover_name({"name": "Changed name"})
+    await options.async_step_cover_class({"device_class": "shutter"})
+    assert entry.options == original
+    assert (await options.async_step_cancel_cover())["step_id"] == (
+        "r410_cover_management"
+    )
+    assert entry.options == original
+
+
+async def test_removing_r410_cascades_cover_only_after_confirmation(
+    options, entry, hass
+):
+    cover = _cover_options()
+    original = {
+        **entry.options,
+        "devices": [
+            {"slave": 63, "model": "r410"},
+            {"slave": 64, "model": "r410"},
+        ],
+        "r410_covers": [cover],
+        "future_option": {"preserve": True},
+    }
+    hass.config_entries.async_update_entry(entry, options=original)
+    await _options_ready(options)
+    summary = await options.async_step_remove_devices({"devices": ["63"]})
+    assert "Garage" in summary["description_placeholders"]["covers"]
+    assert entry.options == original
+    saved = await options.async_step_confirm_remove()
+    assert saved["data"]["devices"] == [{"slave": 64, "model": "r410"}]
+    assert saved["data"]["r410_covers"] == []
+    assert saved["data"]["future_option"] == {"preserve": True}
+
+
+async def test_changing_r410_model_cascades_cover(options, entry, hass):
+    cover = _cover_options()
+    original = {
+        **entry.options,
+        "devices": [{"slave": 63, "model": "r410"}],
+        "r410_covers": [cover],
+        "future_option": "preserve",
+    }
+    hass.config_entries.async_update_entry(entry, options=original)
+    await _options_ready(options)
+    await options.async_step_edit_devices({"slave": "63"})
+    await options.async_step_model({"model": "p404"})
+    await options.async_step_groups({"group_a": "single", "group_b": "single"})
+    summary = await options.async_step_edit_summary()
+    assert "Garage" in summary["description_placeholders"]["cover_removals"]
+    assert entry.options == original
+    saved = await options.async_step_confirm_edit()
+    assert saved["data"]["devices"][0]["model"] == "p404"
+    assert saved["data"]["r410_covers"] == []
+    assert saved["data"]["future_option"] == "preserve"
+
+
+async def test_corrupt_persisted_cover_options_return_controlled_abort(
+    options, entry, hass
+):
+    hass.config_entries.async_update_entry(
+        entry,
+        options={
+            **entry.options,
+            "devices": [{"slave": 63, "model": "r410"}],
+            "r410_covers": [{"id": "broken"}],
+        },
+    )
+    result = await options.async_step_init()
+    assert result["type"] == FlowResultType.ABORT
+    assert result["reason"] == "invalid_stored_options"
+
+
+async def test_empty_management_and_stale_cover_selections_are_controlled(
+    options, entry, hass
+):
+    original = {
+        **entry.options,
+        "devices": [{"slave": 1, "model": "p404"}],
+        "r410_covers": [],
+    }
+    hass.config_entries.async_update_entry(entry, options=original)
+    await _options_ready(options)
+    management = await options.async_step_r410_cover_management()
+    assert management["menu_options"] == ["back_to_device_management"]
+    assert "尚未設定 R410" in management["description_placeholders"]["allocations"]
+    assert (await options.async_step_edit_r410_cover())["step_id"] == "edit_r410_cover"
+    assert (await options.async_step_remove_r410_cover())["step_id"] == (
+        "remove_r410_cover"
+    )
+    assert (await options.async_step_remove_cover_summary())["step_id"] == (
+        "r410_cover_management"
+    )
+    assert (await options.async_step_confirm_remove_cover())["step_id"] == (
+        "r410_cover_management"
+    )
+    assert (await options.async_step_back_to_r410_cover_management())["step_id"] == (
+        "r410_cover_management"
+    )
+
+    cover = _cover_options()
+    configured = {
+        **original,
+        "devices": [
+            {"slave": 63, "model": "r410"},
+            {"slave": 1, "model": "p404"},
+        ],
+        "r410_covers": [cover],
+    }
+    hass.config_entries.async_update_entry(entry, options=configured)
+    await _options_ready(options)
+    management = await options.async_step_r410_cover_management()
+    assert (
+        "一般 Switch：Relay 3、Relay 4"
+        in management["description_placeholders"]["allocations"]
+    )
+    assert (await options.async_step_edit_r410_cover())["step_id"] == (
+        "edit_r410_cover"
+    )
+    assert (await options.async_step_edit_r410_cover({"id": "missing"}))["errors"] == {
+        "id": "cover_not_found"
+    }
+    assert (await options.async_step_remove_r410_cover())["step_id"] == (
+        "remove_r410_cover"
+    )
+    assert (await options.async_step_remove_r410_cover({"id": "missing"}))[
+        "errors"
+    ] == {"id": "cover_not_found"}
+
+
+async def test_three_relay_mode_requires_three_available_relays(options, entry, hass):
+    first = _cover_options(open_relay=1, close_relay=2)
+    hass.config_entries.async_update_entry(
+        entry,
+        options={
+            **entry.options,
+            "devices": [{"slave": 63, "model": "r410"}],
+            "r410_covers": [first],
+        },
+    )
+    await _options_ready(options)
+    await _start_add_cover(options)
+    await options.async_step_cover_name({"name": "Second cover"})
+    await options.async_step_cover_class({})
+    result = await options.async_step_cover_mode({"mode": "three_relay"})
+    assert result["errors"] == {"base": "insufficient_cover_relays"}
+
+
+async def test_cover_summary_and_confirmation_revalidate_allocations(
+    options, entry, hass
+):
+    existing = _cover_options()
+    hass.config_entries.async_update_entry(
+        entry,
+        options={
+            **entry.options,
+            "devices": [{"slave": 63, "model": "r410"}],
+            "r410_covers": [existing],
+        },
+    )
+    await _options_ready(options)
+    await _start_add_cover(options)
+    await _continue_add_cover(options, mapping={"open_relay": "1", "close_relay": "2"})
+    result = await options.async_step_cover_summary()
+    assert result["errors"] == {"base": "invalid_cover_relays"}
+
+    options._cover_draft = dict(existing)
+    options._cover_action = "add"
+    result = await options.async_step_confirm_cover()
+    assert result["step_id"] == "r410_cover_management"
+
+    # A concurrently-added Cover may consume the draft's relays before confirmation.
+    concurrent = _cover_options(open_relay=3, close_relay=4)
+    draft = _cover_options(open_relay=3, close_relay=4)
+    options._cover_draft = draft
+    options._cover_action = "add"
+    hass.config_entries.async_update_entry(
+        entry,
+        options={
+            **entry.options,
+            "r410_covers": [existing, concurrent],
+        },
+    )
+    result = await options.async_step_confirm_cover()
+    assert result["step_id"] == "cover_mapping"
+    assert result["errors"] == {"base": "invalid_cover_relays"}
+
+
+async def test_edit_missing_cover_and_remove_confirmation_guards(options, entry, hass):
+    cover = _cover_options()
+    hass.config_entries.async_update_entry(
+        entry,
+        options={
+            **entry.options,
+            "devices": [{"slave": 63, "model": "r410"}],
+            "r410_covers": [cover],
+        },
+    )
+    await _options_ready(options)
+    options._cover_draft = {}
+    assert (await options.async_step_confirm_cover())["step_id"] == (
+        "r410_cover_management"
+    )
+    options._cover_action = "edit"
+    options._cover_draft = _cover_options()
+    result = await options.async_step_confirm_cover()
+    assert result["step_id"] == "r410_cover_management"
+
+    options._cover_action = "edit"
+    options._cover_draft = {**cover, "id": uuid4().hex}
+    result = await options.async_step_confirm_cover()
+    assert result["step_id"] == "r410_cover_management"
+
+    second = _cover_options(open_relay=3, close_relay=4)
+    hass.config_entries.async_update_entry(
+        entry,
+        options={**entry.options, "r410_covers": [cover, second]},
+    )
+    await _options_ready(options)
+    assert (await options.async_step_edit_r410_cover())["step_id"] == (
+        "edit_r410_cover"
+    )
+    result = await options.async_step_edit_r410_cover({"id": cover["id"]})
+    assert result["step_id"] == "cover_name"
+    options._cover_action = "edit"
+    options._cover_draft = {**cover, "id": uuid4().hex}
+    result = await options.async_step_confirm_cover()
+    assert result["step_id"] == "r410_cover_management"
+    assert entry.options["r410_covers"] == [cover, second]

@@ -199,6 +199,25 @@ class Coordinator(DataUpdateCoordinator[dict[int, DeviceState]]):
             _LOGGER.debug("Write failed for slave %s; awaiting normal poll", slave)
             raise
 
+    async def async_action_command(self, slave: int, request: bytes) -> None:
+        """Send one FIFO action without stateful latest-wins coalescing."""
+        if (
+            self.scanning
+            or not self.gateway_available
+            or not self.states[slave].available
+        ):
+            raise OfflineError("Device unavailable or scan in progress")
+        try:
+            await self.transport.submit_action(request)
+        except GatewayError:
+            self.gateway_lost()
+            raise
+        except TimeoutError, ProtocolError:
+            _LOGGER.debug(
+                "Action write failed for slave %s; it will not be replayed", slave
+            )
+            raise
+
     async def _loop(self) -> None:
         while not self._closed:
             if not self.gateway_available:
