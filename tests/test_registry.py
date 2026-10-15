@@ -190,6 +190,9 @@ async def test_native_entity_areas_survive_reload_rescan_and_options(
     await entry.runtime_data.scan(1, 3)
     result = await hass.config_entries.options.async_init(entry.entry_id)
     result = await hass.config_entries.options.async_configure(
+        result["flow_id"], {"next_step_id": "communication"}
+    )
+    result = await hass.config_entries.options.async_configure(
         result["flow_id"], {"next_step_id": "polling"}
     )
     await hass.config_entries.options.async_configure(

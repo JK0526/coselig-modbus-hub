@@ -4,63 +4,58 @@
     "step": {
       "user": {
         "title": "TCP gateway",
-        "description": "Enter gateway IP or hostname. After TCP validation choose the scan range; scanning never starts automatically.",
-        "data": {
-          "host": "IP / Host",
-          "port": "Port"
-        }
+        "description": "Enter the gateway host and port. After TCP validation, choose a search range; scanning does not start automatically.",
+        "data": {"host": "IP / Host", "port": "Port"}
       },
       "reconfigure": {
         "title": "Change TCP gateway",
         "description": "Settings are saved only after the new TCP connection succeeds. Device and entity identities are retained.",
-        "data": {
-          "host": "IP / Host",
-          "port": "Port"
-        }
+        "data": {"host": "IP / Host", "port": "Port"}
       },
       "scan": {
         "title": "Scanning slaves",
         "description": "Checked {current}/{total}; found {found} devices."
       },
       "scan_failed": {
-        "title": "Scan did not complete with devices",
-        "description": "Check gateway power, wiring and slave addresses, then retry or change range.",
-        "menu_options": {
-          "rescan": "Scan again",
-          "scan_range": "Change scan range",
-          "cancel": "Cancel"
-        }
+        "title": "Scan did not complete",
+        "description": "{reason}. Existing configuration has not changed.",
+        "menu_options": {"rescan": "Scan again", "scan_range": "Change search range", "cancel": "Return"}
+      },
+      "scan_no_new": {
+        "title": "No new devices found",
+        "description": "Existing devices:\n{existing}\n\nMissing in this scan (still configured):\n{missing}\n\nNo configuration has changed.",
+        "menu_options": {"rescan": "Scan again", "scan_range": "Change search range", "back_to_device_management": "Back to device management"}
       },
       "scan_range": {
         "title": "Search Modbus devices",
-        "description": "Choose slave IDs 1–247, then Start search. A smaller range is faster. Rescan defaults to the last completed range.",
-        "data": {
-          "scan_start": "Start slave",
-          "scan_end": "End slave"
-        },
+        "description": "Choose Slave IDs 1–247 and press Start search. A smaller range is faster. The last range is prefilled.",
+        "data": {"scan_start": "Start Slave ID", "scan_end": "End Slave ID"},
         "submit": "Start search"
       },
       "scan_result": {
-        "title": "Manage devices",
-        "description": "Existing devices stay selected, including Missing devices. Select New devices to add; deselect devices to remove. Missing devices are never removed automatically.",
-        "data": {
-          "devices": "Devices to keep"
-        }
+        "title": "Add new devices",
+        "description": "Existing devices:\n{existing}\n\nMissing devices remain configured:\n{missing}\n\nOnly newly found devices can be selected here.",
+        "data": {"devices": "New devices to add"}
       },
       "model": {
-        "title": "Slave {slave}: model",
-        "description": "Detected family: {family}; recommended model: {recommended}. Confirm the physical model. P404/P210 cannot be distinguished automatically.",
-        "data": {
-          "model": "Device model"
-        }
+        "title": "Slave {slave}: confirm model",
+        "description": "Detected family: {family}; suggested model: {recommended}. {model_reason}",
+        "data": {"model": "Device model"}
       },
       "groups": {
-        "title": "Slave {slave}: output modes",
-        "description": "Choose Group A and, for P404, Group B. CCT uses the first register for brightness and the second for temperature.",
-        "data": {
-          "group_a": "Group A: outputs 1 + 2",
-          "group_b": "Group B: outputs 3 + 4"
-        }
+        "title": "Slave {slave}: output configuration",
+        "description": "Choose the user-facing output mode for each output pair.",
+        "data": {"group_a": "Outputs 1 + 2", "group_b": "Outputs 3 + 4"}
+      },
+      "add_summary": {
+        "title": "Confirm new devices",
+        "description": "{summary}\n\nTotal: {count} new device(s). Settings are saved only after confirmation.",
+        "menu_options": {"confirm_add": "Confirm add", "cancel_add": "Cancel"}
+      },
+      "edit_summary": {
+        "title": "Confirm device changes",
+        "description": "{summary}\n\nSettings are saved only after confirmation.",
+        "menu_options": {"confirm_edit": "Confirm changes", "cancel_edit": "Cancel"}
       }
     },
     "error": {
@@ -68,91 +63,100 @@
       "cannot_connect": "Cannot connect to gateway. Check the address, port and power.",
       "invalid_range": "Start must not exceed end.",
       "invalid_poll_interval": "Interval must be 0 or at least 0.5 seconds.",
-      "no_devices": "Choose at least one device to add, or cancel setup."
+      "no_devices": "Select at least one new device to add.",
+      "no_devices_to_remove": "Select at least one device to remove."
     },
     "abort": {
       "already_configured": "This gateway is already configured.",
       "user_cancelled": "Setup cancelled. No changes saved."
     },
-    "progress": {
-      "scan": "Scanning {current}/{total}; found {found} devices."
-    }
+    "progress": {"scan": "Scanning {current}/{total}; found {found} devices."}
   },
   "options": {
     "step": {
-      "scan": {
-        "title": "Scanning slaves",
-        "description": "Checked {current}/{total}; found {found} devices."
-      },
-      "scan_failed": {
-        "title": "Scan did not complete with devices",
-        "description": "Check gateway power, wiring and slave addresses, then retry or change range.",
-        "menu_options": {
-          "rescan": "Scan again",
-          "scan_range": "Change scan range",
-          "cancel": "Cancel"
-        }
-      },
-      "scan_range": {
-        "title": "Search Modbus devices",
-        "description": "Choose slave IDs 1–247, then Start search. A smaller range is faster. Rescan defaults to the last completed range.",
-        "data": {
-          "scan_start": "Start slave",
-          "scan_end": "End slave"
-        },
-        "submit": "Start search"
-      },
-      "scan_result": {
-        "title": "Manage devices",
-        "description": "Existing devices stay selected, including Missing devices. Select New devices to add; deselect devices to remove. Missing devices are never removed automatically.",
-        "data": {
-          "devices": "Devices to keep"
-        }
-      },
-      "model": {
-        "title": "Slave {slave}: model",
-        "description": "Detected family: {family}; recommended model: {recommended}. Confirm the physical model. P404/P210 cannot be distinguished automatically.",
-        "data": {
-          "model": "Device model"
-        }
-      },
-      "groups": {
-        "title": "Slave {slave}: P404 outputs",
-        "description": "New P404 devices default to four independent dimmers. CCT uses the first register for brightness and the second for temperature.",
-        "data": {
-          "group_a": "Group A: outputs 1 + 2",
-          "group_b": "Group B: outputs 3 + 4"
-        }
-      },
       "init": {
-        "title": "Coselig options",
-        "menu_options": {
-          "polling": "Polling interval",
-          "manage_devices": "Manage devices / output modes",
-          "scan_range": "Rescan devices"
-        }
+        "title": "Coselig settings",
+        "menu_options": {"device_management": "Device management", "communication": "Communication settings"}
+      },
+      "device_management": {
+        "title": "Device management",
+        "menu_options": {"add_devices": "Add / search devices", "edit_devices": "Modify an existing device", "remove_devices": "Remove devices", "back_to_options": "Back to settings"}
+      },
+      "communication": {
+        "title": "Communication settings",
+        "menu_options": {"polling": "Polling interval", "back_to_options": "Back to settings"}
       },
       "polling": {
         "title": "Polling interval",
-        "description": "Set 0 to pause background polling. Control and scanning still work. Other values must be >=0.5 seconds. Applies immediately without reload.",
-        "data": {
-          "poll_interval": "Polling interval (seconds)"
-        }
+        "description": "Set 0 to pause background polling. Control and scanning still work. Other values must be at least 0.5 seconds. Applies immediately without reload.",
+        "data": {"poll_interval": "Polling interval (seconds)"}
+      },
+      "scan": {"title": "Scanning slaves", "description": "Checked {current}/{total}; found {found} devices."},
+      "scan_failed": {
+        "title": "Scan did not complete",
+        "description": "{reason}. Existing configuration has not changed.",
+        "menu_options": {"rescan": "Scan again", "scan_range": "Change search range", "cancel": "Return"}
+      },
+      "scan_no_new": {
+        "title": "No new devices found",
+        "description": "Existing devices:\n{existing}\n\nMissing in this scan (still configured):\n{missing}\n\nNo configuration has changed.",
+        "menu_options": {"rescan": "Scan again", "scan_range": "Change search range", "back_to_device_management": "Back to device management"}
+      },
+      "scan_range": {
+        "title": "Search Modbus devices",
+        "description": "Choose Slave IDs 1–247 and press Start search. A smaller range is faster. The last range is prefilled.",
+        "data": {"scan_start": "Start Slave ID", "scan_end": "End Slave ID"},
+        "submit": "Start search"
+      },
+      "scan_result": {
+        "title": "Add new devices",
+        "description": "Existing devices:\n{existing}\n\nMissing devices remain configured:\n{missing}\n\nOnly newly found devices can be selected here.",
+        "data": {"devices": "New devices to add"}
+      },
+      "model": {
+        "title": "Slave {slave}: confirm model",
+        "description": "Detected family: {family}; suggested model: {recommended}. {model_reason}",
+        "data": {"model": "Device model"}
+      },
+      "groups": {
+        "title": "Slave {slave}: output configuration",
+        "description": "Choose the user-facing output mode for each output pair.",
+        "data": {"group_a": "Outputs 1 + 2", "group_b": "Outputs 3 + 4"}
+      },
+      "add_summary": {
+        "title": "Confirm new devices",
+        "description": "{summary}\n\nTotal: {count} new device(s). Settings are saved only after confirmation.",
+        "menu_options": {"confirm_add": "Confirm add", "cancel_add": "Cancel"}
+      },
+      "edit_devices": {
+        "title": "Modify an existing device",
+        "description": "Choose one configured Slave to change.",
+        "data": {"slave": "Device"},
+        "menu_options": {"back_to_device_management": "Back to device management"}
+      },
+      "edit_summary": {
+        "title": "Confirm device changes",
+        "description": "{summary}\n\nSettings are saved only after confirmation.",
+        "menu_options": {"confirm_edit": "Confirm changes", "cancel_edit": "Cancel"}
+      },
+      "remove_devices": {
+        "title": "Remove devices",
+        "description": "Select one or more configured devices. Removal happens only after the next confirmation.",
+        "data": {"devices": "Devices to remove"},
+        "menu_options": {"back_to_device_management": "Back to device management"}
+      },
+      "remove_summary": {
+        "title": "Confirm device removal",
+        "description": "Devices to remove:\n{devices}\n\nTheir Integration Entities, Child Devices and Parent Devices will be removed after reload and registry cleanup.",
+        "menu_options": {"confirm_remove": "Confirm removal", "cancel_remove": "Cancel"}
       }
     },
     "error": {
-      "invalid_host": "Enter a valid IP or hostname.",
-      "cannot_connect": "Cannot connect to gateway. Check the address, port and power.",
       "invalid_range": "Start must not exceed end.",
       "invalid_poll_interval": "Interval must be 0 or at least 0.5 seconds.",
-      "no_devices": "Choose at least one device to add, or cancel setup."
+      "no_devices": "Select at least one new device to add.",
+      "no_devices_to_remove": "Select at least one device to remove."
     },
-    "abort": {
-      "already_configured": "This gateway is already configured.",
-      "user_cancelled": "Setup cancelled. No changes saved."
-    },
-    "progress": {
-      "scan": "Scanning {current}/{total}; found {found} devices."
-    }
+    "progress": {"scan": "Scanning {current}/{total}; found {found} devices."}
   }
 }

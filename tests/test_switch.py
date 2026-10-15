@@ -2,6 +2,7 @@ import asyncio
 from unittest.mock import Mock, patch
 
 import pytest
+from homeassistant.data_entry_flow import FlowResultType
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import area_registry as ar
 from homeassistant.helpers import device_registry as dr
@@ -191,6 +192,9 @@ async def test_r410_native_registry_poll_zero_reload_options_rescan(
     assert diagnostics["gateway"]["host"] == "**REDACTED**"
     result = await hass.config_entries.options.async_init(entry.entry_id)
     result = await hass.config_entries.options.async_configure(
+        result["flow_id"], {"next_step_id": "communication"}
+    )
+    result = await hass.config_entries.options.async_configure(
         result["flow_id"], {"next_step_id": "polling"}
     )
     await hass.config_entries.options.async_configure(
@@ -199,25 +203,37 @@ async def test_r410_native_registry_poll_zero_reload_options_rescan(
     await hass.async_block_till_done()
     assert await hass.config_entries.async_reload(entry.entry_id)
     await hass.async_block_till_done()
-    # Complete native rescan confirmation (including Missing dimmers), then reload.
+    # Scanning only reports the existing R410; Add cannot remove or reconfigure it.
     result = await hass.config_entries.options.async_init(entry.entry_id)
     flow_id = result["flow_id"]
     await hass.config_entries.options.async_configure(
-        flow_id, {"next_step_id": "scan_range"}
+        flow_id, {"next_step_id": "device_management"}
+    )
+    await hass.config_entries.options.async_configure(
+        flow_id, {"next_step_id": "add_devices"}
     )
     await hass.config_entries.options.async_configure(
         flow_id, {"scan_start": 70, "scan_end": 70}
     )
     await hass.async_block_till_done()
     result = await hass.config_entries.options.async_configure(flow_id)
-    assert result["step_id"] == "scan_result"
+    assert result["step_id"] == "scan_no_new"
+    assert len(entry.options["devices"]) == 3
     result = await hass.config_entries.options.async_configure(
-        flow_id, result["data_schema"]({})
+        flow_id, {"next_step_id": "back_to_device_management"}
     )
-    while result.get("step_id") in ("model", "groups"):
-        result = await hass.config_entries.options.async_configure(
-            flow_id, result["data_schema"]({})
-        )
+    result = await hass.config_entries.options.async_configure(
+        flow_id, {"next_step_id": "edit_devices"}
+    )
+    result = await hass.config_entries.options.async_configure(flow_id, {"slave": "70"})
+    result = await hass.config_entries.options.async_configure(
+        flow_id, {"model": "r410"}
+    )
+    assert result["step_id"] == "edit_summary"
+    result = await hass.config_entries.options.async_configure(
+        flow_id, {"next_step_id": "confirm_edit"}
+    )
+    assert result["type"] == FlowResultType.CREATE_ENTRY
     await hass.async_block_till_done()
     assert {device["model"] for device in entry.options["devices"]} == {
         "p404",
@@ -249,11 +265,9 @@ async def test_r410_native_registry_poll_zero_reload_options_rescan(
     await asyncio.wait_for(gateway.arrived.wait(), 1)
     async with entry.runtime_data.coordinator.pause():
         pass
-    assert [(r[0], r[1], int.from_bytes(r[4:6], "big")) for r in gateway.requests] == [
-        (1, 3, 4),
-        (3, 3, 2),
-        (70, 1, 4),
-    ]
+    assert sorted(
+        (r[0], r[1], int.from_bytes(r[4:6], "big")) for r in gateway.requests
+    ) == [(1, 3, 4), (3, 3, 2), (70, 1, 4)]
     assert await hass.config_entries.async_unload(entry.entry_id)
 
 

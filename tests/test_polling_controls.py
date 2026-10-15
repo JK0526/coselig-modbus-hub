@@ -65,6 +65,9 @@ async def test_native_options_zero_control_and_resume_no_reload(hass, entry, gat
     async def set_interval(interval):
         result = await hass.config_entries.options.async_init(entry.entry_id)
         result = await hass.config_entries.options.async_configure(
+            result["flow_id"], {"next_step_id": "communication"}
+        )
+        result = await hass.config_entries.options.async_configure(
             result["flow_id"], {"next_step_id": "polling"}
         )
         result = await hass.config_entries.options.async_configure(
@@ -198,7 +201,10 @@ async def test_options_scan_cancel_keeps_paused_runtime_and_control(
     gateway.block = True
     result = await hass.config_entries.options.async_init(entry.entry_id)
     result = await hass.config_entries.options.async_configure(
-        result["flow_id"], {"next_step_id": "scan_range"}
+        result["flow_id"], {"next_step_id": "device_management"}
+    )
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], {"next_step_id": "add_devices"}
     )
     assert result["data_schema"]({}) == {"scan_start": 51, "scan_end": 80}
     assert not gateway.requests

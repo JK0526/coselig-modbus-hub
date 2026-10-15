@@ -23,11 +23,66 @@ def _hub(hass: HomeAssistant, entry_id: str) -> Any:
 
 
 def _snapshot(hub: Any) -> dict[str, Any]:
+    devices = [
+        {
+            "slave": device.slave,
+            "model": device.model.value,
+            "group_a": device.group_a.value if device.group_a is not None else None,
+            "group_b": device.group_b.value if device.group_b is not None else None,
+            "available": hub.coordinator.states[device.slave].available,
+            "consecutive_failures": hub.coordinator.states[
+                device.slave
+            ].consecutive_failures,
+        }
+        for device in hub.coordinator.devices
+    ]
+    statistics = hub.transport.statistics
     return {
         "connected": hub.transport.connected,
         "poll_interval": hub.coordinator.poll_interval,
         "polling_paused": hub.coordinator.polling_paused,
+        "coordinator": {
+            "configured_slaves": len(devices),
+            "available_slaves": sum(device["available"] for device in devices),
+            "last_poll_round_ms": round(hub.coordinator.last_poll_round_ms, 1),
+            "average_poll_round_ms": round(hub.coordinator.average_poll_round_ms, 1),
+            "queue_depth": hub.transport.queue_depth,
+            "queue_peak": statistics.queue_peak,
+        },
+        "statistics": {
+            "successful_requests": statistics.successful_requests,
+            "failed_requests": statistics.failed_requests,
+            "timeout_count": statistics.timeout_count,
+            "crc_error_count": statistics.crc_error_count,
+            "reconnect_count": statistics.reconnect_count,
+        },
+        "devices": devices,
         "entries": hub.transport.trace.snapshot(),
+    }
+
+
+def _empty_snapshot() -> dict[str, Any]:
+    return {
+        "connected": False,
+        "poll_interval": None,
+        "polling_paused": True,
+        "coordinator": {
+            "configured_slaves": 0,
+            "available_slaves": 0,
+            "last_poll_round_ms": 0.0,
+            "average_poll_round_ms": 0.0,
+            "queue_depth": 0,
+            "queue_peak": 0,
+        },
+        "statistics": {
+            "successful_requests": 0,
+            "failed_requests": 0,
+            "timeout_count": 0,
+            "crc_error_count": 0,
+            "reconnect_count": 0,
+        },
+        "devices": [],
+        "entries": [],
     }
 
 
@@ -66,16 +121,7 @@ def websocket_subscribe(
     def publish(_now: Any = None) -> None:
         nonlocal previous
         hub = _hub(hass, msg["entry_id"])
-        snapshot = (
-            _snapshot(hub)
-            if hub
-            else {
-                "connected": False,
-                "poll_interval": None,
-                "polling_paused": True,
-                "entries": [],
-            }
-        )
+        snapshot = _snapshot(hub) if hub else _empty_snapshot()
         if snapshot != previous:
             connection.send_event(msg["id"], snapshot)
             previous = snapshot

@@ -1,4 +1,4 @@
-# Coselig Modbus Hub v1.3.0
+# Coselig Modbus Hub v1.3.1
 
 將 Coselig **P404／P210 PWM Dimmer 與 R410 Relay** 透過 TCP／RS485 Gateway 加入 Home Assistant，直接建立 Native LightEntity／SwitchEntity。設備與連線設定全走 HA 原生介面；不需要 MQTT、Node-RED 或 YAML。新增的唯讀 Modbus Monitor 只顯示通訊封包，不提供設備管理或寫入工具。
 
@@ -7,7 +7,7 @@ P404 / P210 / R410 → RS485 → TCP Gateway → RTU Transport → Profile + Coo
                                              └→ Memory Trace        └→ Light / Switch
 ```
 
-套件 **1.3.0**，domain `coselig_modbus_hub`，Config Entry schema `2.1`。最低 HA Core **2026.10.0**；本機測試使用 **2026.10.1／Python 3.14.7**。
+套件 **1.3.1**，domain `coselig_modbus_hub`，Config Entry schema `2.1`。最低 HA Core **2026.10.0**；本機測試使用 **2026.10.1／Python 3.14.7**。
 
 ## 安裝與第一次設定
 
@@ -16,8 +16,8 @@ P404 / P210 / R410 → RS485 → TCP Gateway → RTU Transport → Profile + Coo
 3. 輸入 Host／Port（Port 預設 502）。先測試真正 TCP；失敗留在原頁，可修改重試。
 4. TCP 成功後先顯示 **搜尋 Modbus 設備**。第一次預設 `1～247`，可改成現場範圍，例如 `51～80` 或 `1～10`。**進入頁面不會掃描；按「開始搜尋」後才送 request。**
 5. 原生 Progress 顯示搜尋進度與找到設備數。若找不到，可回到範圍頁重試、改範圍或取消，不建立半完成 Entry。
-6. 勾選要加入的 Slave，再依 family 建議確認 **P404／P210／R410**；Dimmer 候選為 P404/P210、Relay 建議 R410、Unknown 可選全部型號。不自動加入設備，也不宣稱能自動區分 P404/P210。
-7. P404 設定 Group A／B；P210 只設定 Group A，預設 **2 × 單路調光**，也可選 **1 × 雙色溫 CCT**。完成後建立每 Slave 一個 Parent Device，並為每個有效輸出建立原生 Child Device 與 LightEntity。R410 不設定 Group，直接建立 4 個 Relay Switch。
+6. 新增流程的結果清單只列本次找到的 New Slave；Existing／Missing 會列在說明中，不能在此流程取消勾選刪除。Dimmer 顯示 P404／P210 並預設 P404；兩者無法由協議可靠區分。R410 唯一候選時直接略過型號頁。
+7. 依設備設定輸出模式後先檢視新增摘要，只有按「確認新增」才寫入設定。P404 設定輸出 1＋2、3＋4；P210 設定輸出 1＋2；使用者看到的是「兩路獨立調光／一組雙色溫」。R410 不設定輸出模式，直接進摘要。完成後每 Slave 建立一個 Parent Device 與輸出 Child Device。
 
 搜尋範圍限整數 `1～247` 且 start≤end；縮小範圍可節省無回應位址的等待時間。搜尋分三階段：**Common discovery → family identification → model confirmation**。先以 FC03 `start=0/count=1` 確認 Slave 存在；不要求 register 內容等於 Slave ID。再試 FC03 `0x082A/count=2`，成功為 PWM Dimmer；否則試 FC02 `start=0/count=4` 識別 Relay。兩者皆失敗則保留 Unknown，由使用者確認。FC02 僅用於 Scanner，不進行 runtime DI polling。
 
@@ -49,15 +49,20 @@ Group A 使用 CH1＋CH2，Group B 使用 CH3＋CH4。CCT 沿用第一個 regist
 
 ## Modbus Monitor
 
-管理員登入後，左側 **Coselig Modbus Monitor** 可選擇已載入 Gateway，查看：
+管理員登入後，左側 **Coselig Modbus Monitor** 開啟診斷儀表板。桌面版以 CSS Grid 分成左側 Raw Trace 與右側 Sidebar；窄畫面改成單欄。Gateway selector、Slave／類型篩選、清除、暫停畫面與自動捲動都在工具列。
 
-- 瀏覽器本地時間（含毫秒）、TX／RX 完整 Raw HEX。
-- OK／CRC ERROR／TIMEOUT／ERROR 與 transaction latency（毫秒）。
-- Gateway TCP connected 與目前 polling interval。
+Sidebar 顯示：
+
+- Gateway connected、Polling、可用／設定 Slave 數、最近與平均輪詢耗時、Queue 深度與峰值。
+- 本次執行期間的 Successful／Failed／Timeout／CRC Error／Reconnect 統計。
+- 每個 configured Slave 的型號、Online／Offline 與連續失敗數；點選 Slave 只改前端 Trace filter。
+- 點選任一 Trace row 可查看 transaction 的 Request／Response、Slave、Function、用途、輸出語意、Latency 與結果。
 
 TX 藍色、RX／OK 綠色、TIMEOUT 橘色、CRC ERROR／ERROR 紅色；沿用 v1.1.2 固定狀態色，timestamp、latency 使用 HA 次要文字色，Raw HEX 沿用 TX／RX 色系。
 
-畫面最多保留 **200 筆記憶體 trace**；每約 0.5 秒送出有變更的快照，不增加 Modbus request。HA 重啟／integration reload 後清空；不寫 Recorder、資料庫或檔案，也不把 packet history 放進 Diagnostics。
+Slave 與 TX／RX／OK／Error filters 都只在前端執行；Slave filter 會保留所屬 transaction 的 RX 與 OK／ERROR status。Pause 只凍結畫面，解除時顯示最新快照；Auto-scroll 獨立控制是否跳到最新列。
+
+Monitor backend 只讀 Coordinator、Transport runtime counters、configured device metadata 與現有 TraceBuffer；約每 0.5 秒比較快照且只送出變更內容，**零額外 Modbus request**。Trace 最多保留 **200 筆記憶體紀錄**；HA 重啟／integration reload 後清空。不讀 Recorder、不寫資料庫或檔案，不把 packet history 放進 Diagnostics。
 
 只提供 **清除、暫停畫面、繼續畫面**。暫停畫面不停止 TraceBuffer、Modbus、輪詢或控制。清除只清記憶體 trace。離開頁面取消訂閱。
 
@@ -81,11 +86,19 @@ HA 啟動／Entry reload 沒有持久化 runtime cache，因此即使設定 0，
 
 ## 管理與重新搜尋
 
-選項 → **管理設備／輸出模式** 可保留、移除、修改指定型號與 Group 模式。
+選項首頁分為 **設備管理** 與 **通訊設定**。設備管理再分成三個獨立流程：
 
-選項 → **重新掃描設備** 先顯示上次完成管理時保存的 `scan_start／scan_end`。例如上次 `51～80`，本次先帶入 `51～80`；仍需按「開始搜尋」，不自動掃任何範圍。既有 v1.0 儲存的範圍會保留，不強行改成新預設。
+- **新增／搜尋設備** 只讓使用者加入本次找到的新設備；Existing 與 Missing 只顯示狀態，不會進入 Model／輸出設定，也不能在此刪除。無新設備時顯示 Existing／Missing 清單，提供重新搜尋、修改範圍或返回。
+- **修改既有設備** 一次選一台 Slave，可修正 Model 與輸出模式。型號或輸出配置會先顯示變更摘要，再確認套用。
+- **移除設備** 可多選既有 Slave；獨立確認頁列出將移除的實體。只有按「確認移除」才會改 Options。
 
-搜尋先暫停 Coordinator、等舊交易完成，再獨佔 bus。結束／取消後恢復原有狀態，包括 Polling=0。掃描期間控制明確拒絕，不累積操作。Existing／Missing 預設保留；New 由使用者勾選加入，取消勾選才刪除。全部 Missing 也不會自動刪。
+新增、修改與移除在確認前都只保存在流程記憶體中。確認後以既有 Options 為基礎只更新 `devices`，保留 `poll_interval`、搜尋範圍與未知的未來選項。未修改設備的 entity_id、unique_id、Parent／Child ID、名稱、Area 與 automation reference 不變。Group mode 切換沿用原本 Registry lifecycle。
+
+**通訊設定 → 輪詢週期** 設定背景輪詢。
+
+新增／搜尋先顯示上次儲存的 `scan_start／scan_end`；改範圍後只有確認新增設備時才保存。搜尋必須按「開始搜尋」，不會自動掃描。
+
+搜尋先暫停 Coordinator、等舊交易完成，再獨佔 bus。結束／取消後恢復原有狀態，包括 Polling=0。掃描期間控制明確拒絕，不累積操作。Missing 設備保留原設定。
 
 Group 模式切換只替換指定 Group 的 Entity Registry 項目；另一 Group 的 unique_id、entity_id、自訂名稱與 Area 保留。被移除輸出的自動化參照需人工調整；切回不保證還原已刪實體的 metadata。
 
@@ -137,6 +150,8 @@ Round time 從取得輪詢 lock、開始第一個 configured Slave 到本輪最�
 
 **v1.2.1 → v1.3.0**：Entry schema 維持 2.1；舊 P404/P210 data、options、entity_id、unique_id、Parent/Child IDs、名稱與 Area 原地保留。R410 只增加 `{"slave":70,"model":"r410"}`。更新後重啟 HA，無需刪除整合。
 
+**v1.3.0 → v1.3.1**：Entry schema 維持 2.1，無需重建 Hub。設備管理改為新增、修改、移除三個明確流程；新增只接受 New Slave，修改一次一台，移除與所有變更都需要摘要確認。Monitor 增加 runtime diagnostics 與 Packet Decoder；只讀既有記憶體資料，不新增 Modbus request 或寫入功能。
+
 **v0.2.x → v1.x** 仍是 Clean Break：先備份 HA，移除舊 Entry，更新、重啟並重新新增。舊 MQTT retained Discovery／實體／自動化需自行檢查清理；新版不連 broker。正式切換前停用寫入相同設備的舊流程。
 
 - 使用帶 CRC 的 RTU over TCP，不是 MBAP Modbus TCP。
@@ -158,4 +173,4 @@ node --test tests/frontend/monitor.test.cjs
 
 Python 測試直接使用正式 custom component、HA APIs 與 loopback Gateway；前端以 Node 內建 runner 獨立測試，不計入 Python coverage。Config Flow 行／分支要求100%，整體 coverage≥99%。
 
-詳見 [v1.3.0 發布說明](docs/v1.3.0-release-notes.md)、[v1.3.0 架構](docs/v1.3.0-architecture.md)、[v1.2.1 發布說明](docs/v1.2.1-release-notes.md)、[v1.2.0 發布說明](docs/v1.2.0-release-notes.md)、[v1.1.2 發布說明](docs/v1.1.2-release-notes.md)、[v1.1.1 發布說明](docs/v1.1.1-release-notes.md)、[v1.1 實作與發布報告](docs/v1.1-implementation-report.md)、[開發架構](docs/development.md)、[實機驗收清單](docs/v1.0-acceptance.md)。**尚未完成 24～48 小時實機 soak test，測試通過不代表現場全部功能已驗收。**
+詳見 [v1.3.1 發布說明](docs/v1.3.1-release-notes.md)、[v1.3.0 發布說明](docs/v1.3.0-release-notes.md)、[v1.3.0 架構](docs/v1.3.0-architecture.md)、[v1.2.1 發布說明](docs/v1.2.1-release-notes.md)、[v1.2.0 發布說明](docs/v1.2.0-release-notes.md)、[v1.1.2 發布說明](docs/v1.1.2-release-notes.md)、[v1.1.1 發布說明](docs/v1.1.1-release-notes.md)、[v1.1 實作與發布報告](docs/v1.1-implementation-report.md)、[開發架構](docs/development.md)、[實機驗收清單](docs/v1.0-acceptance.md)。**尚未完成 24～48 小時實機 soak test，測試通過不代表現場全部功能已驗收。**

@@ -10,6 +10,7 @@ from pytest_homeassistant_custom_component.common import async_fire_time_changed
 
 from custom_components.coselig_modbus_hub.const import DOMAIN
 from custom_components.coselig_modbus_hub.hub import Hub
+from custom_components.coselig_modbus_hub.models import Device, Model
 from custom_components.coselig_modbus_hub.monitor import (
     async_register_monitor,
     websocket_clear,
@@ -20,7 +21,13 @@ from custom_components.coselig_modbus_hub.monitor import (
 
 @pytest.fixture
 async def monitored_hub(hass, entry):
-    entry.runtime_data = Hub.create(hass, "private-host", 502, (), 0)
+    entry.runtime_data = Hub.create(
+        hass,
+        "private-host",
+        502,
+        (Device(51, Model.P404), Device(63, Model.R410)),
+        2,
+    )
     yield entry.runtime_data
     await entry.runtime_data.stop()
 
@@ -38,6 +45,19 @@ async def ws(hass, hass_ws_client, entry, monitored_hub):
 async def test_live_trace_clear_and_unsubscribe_without_requests(
     hass, entry, monitored_hub, ws
 ):
+    monitored_hub.coordinator.states[51].available = True
+    monitored_hub.coordinator.states[63].consecutive_failures = 2
+    monitored_hub.coordinator._round_times.extend((200.0, 230.0))
+    statistics = monitored_hub.transport.statistics
+    statistics.successful_requests = 15
+    statistics.failed_requests = 4
+    statistics.timeout_count = 3
+    statistics.crc_error_count = 1
+    statistics.reconnect_count = 2
+    statistics.queue_peak = 24
+    monitored_hub.transport.submit = AsyncMock(
+        side_effect=AssertionError("Monitor must not submit Modbus requests")
+    )
     await ws.send_json({"id": 1, "type": f"{DOMAIN}/monitor/list"})
     result = await ws.receive_json()
     assert result["result"] == [{"entry_id": entry.entry_id, "title": entry.title}]
@@ -49,10 +69,44 @@ async def test_live_trace_clear_and_unsubscribe_without_requests(
     )
     assert (await ws.receive_json())["success"]
     snapshot = (await ws.receive_json())["event"]
-    assert snapshot["poll_interval"] == 0
-    assert snapshot["polling_paused"]
+    assert snapshot["poll_interval"] == 2
+    assert not snapshot["polling_paused"]
+    assert snapshot["coordinator"] == {
+        "configured_slaves": 2,
+        "available_slaves": 1,
+        "last_poll_round_ms": 230.0,
+        "average_poll_round_ms": 215.0,
+        "queue_depth": 0,
+        "queue_peak": 24,
+    }
+    assert snapshot["statistics"] == {
+        "successful_requests": 15,
+        "failed_requests": 4,
+        "timeout_count": 3,
+        "crc_error_count": 1,
+        "reconnect_count": 2,
+    }
+    assert snapshot["devices"] == [
+        {
+            "slave": 51,
+            "model": "p404",
+            "group_a": "single",
+            "group_b": "single",
+            "available": True,
+            "consecutive_failures": 0,
+        },
+        {
+            "slave": 63,
+            "model": "r410",
+            "group_a": None,
+            "group_b": None,
+            "available": False,
+            "consecutive_failures": 2,
+        },
+    ]
     assert snapshot["entries"][0]["raw_hex"] == "01 03 08 2A 00 02 E7 90"
-    assert monitored_hub.transport.statistics.successful_requests == 0
+    assert statistics.successful_requests == 15
+    monitored_hub.transport.submit.assert_not_awaited()
     await ws.send_json(
         {"id": 3, "type": f"{DOMAIN}/monitor/clear", "entry_id": entry.entry_id}
     )
@@ -62,7 +116,8 @@ async def test_live_trace_clear_and_unsubscribe_without_requests(
     assert (await ws.receive_json())["event"]["entries"] == []
     await ws.send_json({"id": 4, "type": "unsubscribe_events", "subscription": 2})
     assert (await ws.receive_json())["success"]
-    assert monitored_hub.transport.statistics.successful_requests == 0
+    assert statistics.successful_requests == 15
+    monitored_hub.transport.submit.assert_not_awaited()
 
 
 @pytest.mark.parametrize("command", ["subscribe", "clear"])
@@ -112,10 +167,10 @@ async def test_register_versioned_static_panel(hass):
         await async_register_monitor(hass)
     assert register.call_count == 3
     paths = hass.http.async_register_static_paths.call_args.args[0]
-    assert paths[0].url_path == "/coselig_modbus_hub/monitor-1.3.0.js"
+    assert paths[0].url_path == "/coselig_modbus_hub/monitor-1.3.1.js"
     panel = hass.data[DATA_PANELS]["coselig-modbus-monitor"]
     assert panel.require_admin
-    assert panel.config["_panel_custom"]["module_url"].endswith("monitor-1.3.0.js")
+    assert panel.config["_panel_custom"]["module_url"].endswith("monitor-1.3.1.js")
 
 
 async def test_subscription_survives_runtime_reload_and_no_change(
@@ -132,8 +187,12 @@ async def test_subscription_survives_runtime_reload_and_no_change(
     del entry.runtime_data
     async_fire_time_changed(hass, dt_util.utcnow() + timedelta(seconds=2))
     await hass.async_block_till_done()
-    assert (await ws.receive_json())["event"]["poll_interval"] is None
+    unloaded = (await ws.receive_json())["event"]
+    assert unloaded["poll_interval"] is None
+    assert unloaded["coordinator"]["configured_slaves"] == 0
+    assert unloaded["statistics"]["successful_requests"] == 0
+    assert unloaded["devices"] == []
     entry.runtime_data = monitored_hub
     async_fire_time_changed(hass, dt_util.utcnow() + timedelta(seconds=3))
     await hass.async_block_till_done()
-    assert (await ws.receive_json())["event"]["poll_interval"] == 0
+    assert (await ws.receive_json())["event"]["poll_interval"] == 2

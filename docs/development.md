@@ -1,4 +1,4 @@
-# v1.3.0 開發架構與驗證依據
+# v1.3.1 開發架構與驗證依據
 
 更新：2026-10-15。v1.0 取代 v0.2.x 的 MQTT／Panel／Channel 架構；歷史問題盤點保留於 `docs/specs/`，不作新版開發規範。
 
@@ -15,11 +15,11 @@
 | `profiles.py` | 集中模型 register map、PollSpec、OutputSpec、dimmer codec、family probes |
 | `switch.py` | R410 原生 Relay Switch、optimistic 狀態、FC05 與 poll 校正 |
 | `light.py` | 原生燈光、立即 optimistic 更新、正常 poll 校正、Kelvin color mode |
-| `config_flow.py` | Gateway／進度掃描／型號／Group、Options、Reconfigure |
+| `config_flow.py` | Gateway／搜尋／新增確認、單設備修改、獨立移除確認、通訊設定、Reconfigure |
 | `__init__.py` | typed `ConfigEntry[Hub].runtime_data`、啟動 retry、平台／關機清理、registry 差異移除 |
 | `diagnostics.py` | 小型 runtime 快照、固定 Host 遮罩、不持久化 |
 
-新增 `trace.py` 為200筆記憶體旁路，`monitor.py／monitor.js` 只有管理員唯讀 WS 與 HEX console。正式部署新增 http／websocket_api dependencies，沒有 MQTT。
+新增 `trace.py` 為200筆記憶體旁路，`monitor.py／monitor.js` 提供管理員唯讀診斷快照、HEX Trace、篩選與 Packet Decoder。正式部署新增 http／websocket_api dependencies，沒有 MQTT。
 
 唯一正式核心位於 `custom_components/coselig_modbus_hub/`。沒有額外抽象基底、外部 packet library、第二套 runtime、自訂 registry 或 MQTT dependency。
 
@@ -42,6 +42,8 @@ TCP 連線錯誤與 Slave transaction timeout 分開分類。`TimeoutError` 繼�
 每 Slave 一個 Parent HA Device，identifier 包含 Entry ID／Slave；每個有效輸出使用原生 Child Device，identifier 維持 entity unique_id，並以 Parent 的真實 `DeviceEntry.id` 建立 `parent_device_id`。不建立 Gateway Device，也不使用 `via_device_id` 表示邏輯輸出。所有 native light／switch 設定 `has_entity_name=True`。
 
 setup 時依最新 profiles 列出有效 unique_id，只刪除同 Entry／本 integration 不再使用的輸出。存續 entity registry 項目完全不更新 user name。移除 Device 僅使用 HA 2026.10 的 `async_remove_device` API。
+
+Options Flow 首頁只分「設備管理／通訊設定」。新增 selector 僅包含本次新找到的 Slave；Existing／Missing 透過文字區塊說明，不進入 Model／Group，也不能在新增流程移除。Edit 一次處理一個 Slave，Remove 獨立多選並另有確認頁。新增、修改、移除的 pending state 留在 Flow instance；只有確認 step 會以原 options 深複製後更新 `devices`，保留 poll interval、搜尋範圍與未知欄位。P404 預設、R410 唯一候選快進及人類可讀輸出選項都由 Flow 提供，不更動 schema 2.1。
 
 Options profiles 使用 `OptionsFlowWithReload`；polling step 設 `automatic_reload=False` 並直接更新 runtime／喚醒 scheduler，無 options update listener。Reconfigure 使用 `async_update_reload_and_abort`。無手動 options update listener／第二次 reload。新 Host 先通過 TCP，才修改 Entry，Entry ID 與 registry 身份保持不變。
 
@@ -79,12 +81,18 @@ Polling=0 只讓背景scheduler等待Event，既有狀態／failure保留，寫�
 
 20輪時間deque只量測bus round，不含lock等待／下一輪sleep；不自動調interval或降頻Slave。原生 Entity／Child Device Registry 的 area_id 完全由 HA 與使用者管理，不加入 area 欄位或 mapping table。
 
-Monitor訂閱每0.5秒讀取ring快照，只在變更時推送；無Modbus I/O。訂閱取消／WS斷線清timer。UI paused只凍結顯示，最新快照仍有200筆上限。所有WS命令要求admin，只提供list／subscribe／clear，沒有任何register或設定寫入。Trace例外隔離；完整RX記錄在原CRC驗證前，結果之後另記OK／ERROR及latency。前端以HA theme CSS variables 對 TX／RX／OK／TIMEOUT／CRC ERROR／ERROR 分色，未改 protocol 或 WebSocket schema。
+Monitor訂閱每0.5秒讀取ring、Coordinator health／round time、Transport counters／queue 與Configured Device metadata，只在整體快照變更時推送；helper只取runtime記憶體，沒有任何Transport.submit／Modbus I/O。Statistics與Clear Trace分離。Sidebar有Gateway、Communication Statistics、Device Health、Packet Decoder；Slave／Type filter、裝置點擊與Auto-scroll都只有前端效果。transaction grouping由Raw entries推導，Decoder涵蓋FC01～FC06與FC81～FC86 exception；Trace status保留CRC權威判定。Pause只凍結render，Auto-scroll獨立。所有WS命令要求admin，只提供list／subscribe／clear，沒有register或設定寫入。Trace例外隔離；完整RX記錄在原CRC驗證前，結果之後另記OK／ERROR及latency。狀態色維持固定TX／RX／OK／TIMEOUT／CRC ERROR／ERROR，背景與卡片使用HA theme variables。
 
 ## v1.1.1 行為
 
 P210 的 Group A 可選 `single` 或 `cct`；single 建立 CH1／CH2，cct 只建立 `group_a` 雙色溫 entity，兩者均固定 FC03 起點 `0x082A`、count 2。P404 的 Group A／B 行為不變。切換輸出模式沿用既有 registry 差異清理與原生 Area／名稱保存策略。
 
-## v1.3.0
+## v1.3.0 baseline
 
-詳見 [v1.3.0 architecture](v1.3.0-architecture.md)。R410 只建立四個 Switch；FC02 僅供 Scanner identification，無 DI runtime poll 或 entity。舊 v1.1／v1.2 發布說明保留歷史記錄，現行行為以此文件與 v1.3.0 架構為準。
+詳見 [v1.3.0 architecture](v1.3.0-architecture.md)。R410 只建立四個 Switch；FC02 僅供 Scanner identification，無 DI runtime poll 或 entity。
+
+## v1.3.1 UI 行為
+
+Config Flow options 以 HA Native menu/form 實作，不新增 frontend；Flow 管理器在確認摘要前不呼叫 `async_create_entry`。既有 Device 只在獨立 Edit／Remove intents 被選取，Add 的 selector 僅接受 New Slave，Missing 保留。對未修改 Slave 重新序列化的是原 `Device` profile 的值，entity registry identities、Parent／Child identifiers、Area 與自訂名稱策略維持不變。Entry version/minor version仍是2.1。
+
+Diagnostic Monitor 擴充原有 subscribe snapshot，保留list／subscribe／clear三種WebSocket commands與約500ms changed-only publish。前端只衍生 transaction、filter及decoder view，不建立Graph／歷史資料，也不增加Modbus request；Clear只清Trace ring，不清Transport counters。
