@@ -1,65 +1,126 @@
-# v1.3.3 開發架構與驗證依據
+# v1.3.3 開發與維護指南
 
-更新：2026-10-15。v1.0 取代 v0.2.x 的 MQTT／Panel／Channel 架構；歷史問題盤點保留於 `docs/specs/`，不作新版開發規範。
+更新：2026-10-15。本文描述目前 v1.3.3 架構、Runtime 行為、維護界線與可重現驗證方式。使用者操作請看 [README](../README.md)；版本差異以 [GitHub Releases](https://github.com/JK0526/coselig-modbus-hub/releases) 與各版 Release Notes 為準。歷史問題盤點保留在 `docs/specs/`，不作新版規範。
 
-## 模組與責任
+## 架構與模組責任
+
+每個 Config Entry 對應一個 Gateway connection、Hub、Transport、Coordinator 與設備集合；多個 Config Entry 彼此隔離。主要程式位於 `custom_components/coselig_modbus_hub/`。
 
 | 模組 | 責任 |
 | --- | --- |
-| `models.py` | 嚴格 Device／Model／GroupMode、輸出占用、身份、亮度與色溫轉換 |
-| `protocol.py` | CRC16、通用 FC01～FC06、例外回覆、完整 echo、拆包與單一 ADU 讀取 |
-| `transport.py` | 一個 socket／worker、單筆在途、控制優先、bounded latest-wins、交易統計 |
-| `scanner.py` | 獨佔 bus、共同 discovery、依 Profile family probes 辨識、型號由使用者確認 |
-| `coordinator.py` | 單循環目標週期、逐 Slave 輪詢、真實 cache、可用性與重連退避、HA listener |
-| `hub.py` | 組合 Transport／Coordinator，管理啟停與暫停輪詢的掃描 |
-| `profiles.py` | 集中模型 register map、PollSpec、OutputSpec、dimmer codec、family probes |
-| `switch.py` | R410 原生 Relay Switch、optimistic 狀態、FC05 與 poll 校正 |
-| `light.py` | 原生燈光、立即 optimistic 更新、正常 poll 校正、Kelvin color mode |
-| `config_flow.py` | Gateway／搜尋／新增確認、單設備修改、獨立移除確認、通訊設定、Reconfigure |
-| `__init__.py` | typed `ConfigEntry[Hub].runtime_data`、啟動 retry、平台／關機清理、registry 差異移除 |
-| `diagnostics.py` | 小型 runtime 快照、固定 Host 遮罩、不持久化 |
+| `models.py` | Device／Model／GroupMode、序列化與亮度／色溫轉換 |
+| `profiles.py` | DeviceProfile、register map、PollSpec、OutputSpec、dimmer codec 與 family probe |
+| `protocol.py` | CRC16、通用 FC01～FC06、例外回覆、echo 驗證、ADU 解析 |
+| `transport.py` | 一條 TCP socket／worker、單筆在途請求、控制優先、bounded queue 與交易統計 |
+| `scanner.py` | 獨佔 bus 搜尋、Slave discovery 與 family probe |
+| `coordinator.py` | 輪詢週期、設備狀態 cache、availability、failure threshold 與 reconnect |
+| `hub.py` | 組合 Transport／Coordinator，管理啟停與掃描 |
+| `light.py`／`switch.py` | 原生 HA entity、optimistic state、FC06／FC05 控制 |
+| `config_flow.py` | 初始設定、搜尋範圍、Options intents、Reconfigure |
+| `__init__.py` | Config Entry runtime_data、平台生命週期與 registry 差異清理 |
+| `diagnostics.py` | 遮罩 Host 的 runtime diagnostics |
+| `trace.py`／`monitor.py`／`monitor.js` | 記憶體 trace、管理員 WebSocket API 與唯讀前端 |
 
-新增 `trace.py` 為200筆記憶體旁路，`monitor.py／monitor.js` 提供管理員唯讀診斷快照、HEX Trace、篩選與 Packet Decoder。正式部署新增 http／websocket_api dependencies，沒有 MQTT。
+正式整合只有一套 runtime；不使用 MQTT、自訂 Entity Registry、資料庫、外部 Modbus packet library 或第二套 Gateway worker。
 
-唯一正式核心位於 `custom_components/coselig_modbus_hub/`。沒有額外抽象基底、外部 packet library、第二套 runtime、自訂 registry 或 MQTT dependency。
+## Device Profiles 與 Modbus Protocol
 
-## 資料與交易
+`DeviceProfile` 集中定義設備能力，Coordinator 依 `PollSpec` 讀取，Entity 平台依 `OutputSpec` 建立 Light／Switch。設備能力基線：
 
-永久 data 僅 `host`／`port`；options 僅 `poll_interval`、`scan_start`、`scan_end`、`devices[]`。P404 保存 `group_a`／`group_b`，P210 只保存 `group_a`，R410 不保存 Group；v1.1.0 缺少 P210 `group_a` 時由 `Device.from_dict()` 預設為 `single`。Entry schema 2.1；舊 schema 明確拒絕自動遷移。
+| Model | Runtime Poll | Outputs |
+| --- | --- | --- |
+| P404 | FC03，start `0x082A`，count 4 | Group A、Group B；single 或 CCT |
+| P210 | FC03，start `0x082A`，count 2 | Group A；single 或 CCT |
+| R410 | FC01，start 0，count 4 | Relay 1–4，FC05 |
 
-Entity 操作先寫 HA optimistic 狀態，再依同一操作順序入列。CCT 的亮度與色溫為不同合併 key，各自在 bus 上驗證 0x06 echo。Python 3.14 eager task 用於避免同一 loop tick 的 ON／OFF 或 CCT 子指令順序反轉。
+P404 的 Group A 使用 CH1／CH2，Group B 使用 CH3／CH4；P210 只有 Group A。Single mode 建立兩個 channel outputs，CCT mode 建立一個 group output。P210 不因 CCT 改變 poll count。R410 DI probe 只供 Scanner family identification，不建立 DI entity，也不作 runtime DI poll。
 
-worker 先取控制，再取 poll。每個控制 key 由 Slave、邏輯輸出、命令類別組成；替換只限 pending，舊等待者得到明確的 superseded 結果（`None`）。正在執行的封包不撤回。故障後清除 pending 控制；沒有 retry／read-back／跨重連 replay。
+Dimmer control 使用 FC06 與既有 `0x05xx` codec；profile 共用亮度及色溫 conversion。CCT 的 brightness／color temperature 由同組連續 registers 表達。零亮度為 off，非零最低亮度為 2%；HA 色溫使用 Kelvin API，轉換範圍為 175–455 mired。Conversion 保持集中於 models／profiles，不在各 Entity 複製。
 
-Coordinator 依 Profile 的 PollSpec 逐 Slave 送一筆讀取並等待，狀態使用 address-keyed holding/input registers 與 coils/discrete inputs。低 byte 與 0～100 驗證只存在 Dimmer Profile。輪詢結果附 request 開始的 monotonic 時間，Entity 忽略在最近一次操作前已開始的舊輪詢；後續 poll 才校正 optimistic 值。write echo 不改真實 cache。
+Dimmer response 的 register low byte 必須在 0–100；不合法值不更新輸出 cache。Profile 同時負責 Single／CCT 輸出的 register 占用與 entity key，避免兩種輸出模式同時建立重疊 Entity。P404 預設、P404／P210 人工確認，以及無法辨認 family 時保留 Unknown，皆由 Config Flow 負責。
 
-目標週期以整輪開始時間計算；過慢只 sleep(0)，沒有排程下一輪的 timer／task 或 backlog。掃描先取得整輪 lock，再取得 Transport submission gate，等待舊交易完成，保證 scan 與 poll 不穿插；取消也釋放 lock。掃描期間 UI 控制明確拒絕。
+Transport 收送 RTU frame over TCP，不使用 MBAP。通用 protocol layer 支援 FC01～FC06：bit response 依 Modbus packed-bit order 解讀，register response 解成 UINT16。驗證包括 CRC16、Slave／Function 對應、byte count／frame length 與 write echo；Modbus exception、wrong slave／function、timeout 與 CRC error 分開分類。FC05／FC06 write 必須回覆完整相符 echo 才算成功；不自動 retry、read-back 或跨 reconnect replay。
 
-TCP 連線錯誤與 Slave transaction timeout 分開分類。`TimeoutError` 繼承 `OSError`，必須先處理 timeout，不能落入 TCP disconnect 分支。CRC 另有專屬 error，避免把 wrong slave／function／device exception 算成 CRC。
+`TimeoutError` 同時屬於 `OSError`，Transport 必須先分類 timeout，再分類 TCP socket error，避免把 Slave transaction timeout 誤判為 Gateway disconnect。CRC 使用獨立 error；錯 Slave、錯 Function 與 device exception 不計入 CRC failure。
 
-## Registry lifecycle
+Scanner 不替 P404／P210 猜測型號，型號由使用者確認。探測流程依序為：
 
-每 Slave 一個 Parent HA Device，identifier 包含 Entry ID／Slave；每個有效輸出使用原生 Child Device，identifier 維持 entity unique_id，並以 Parent 的真實 `DeviceEntry.id` 建立 `parent_device_id`。不建立 Gateway Device，也不使用 `via_device_id` 表示邏輯輸出。所有 native light／switch 設定 `has_entity_name=True`。
+1. Common discovery：FC03，start 0，count 1。
+2. Dimmer family probe：FC03，start `0x082A`，count 2。
+3. Relay family probe：FC02，start 0，count 4；只辨認 R410 family，不暴露 DI。
 
-setup 時依最新 profiles 列出有效 unique_id，只刪除同 Entry／本 integration 不再使用的輸出。存續 entity registry 項目完全不更新 user name。移除 Device 僅使用 HA 2026.10 的 `async_remove_device` API。
+搜尋獨佔 bus：Coordinator 暫停開始新一輪，等待既有交易，取得整輪與 Transport submission lock 後才送 probe；取消或完成都釋放 lock 並恢復原 Polling 狀態。控制在掃描期間明確拒絕，不排入 queue。Family probes 均不符合時保留 Unknown 供使用者判斷，不將未辨識設備自動當成 Dimmer 或 Relay。
 
-Options Flow 首頁只分「設備管理／通訊設定」。新增 selector 僅包含本次新找到的 Slave；Existing／Missing 透過文字區塊說明，不進入 Model／Group，也不能在新增流程移除。Edit 一次處理一個 Slave，Remove 獨立多選並另有確認頁。新增、修改、移除的 pending state 留在 Flow instance；只有確認 step 會以原 options 深複製後更新 `devices`，保留 poll interval、搜尋範圍與未知欄位。P404 預設、R410 唯一候選快進及人類可讀輸出選項都由 Flow 提供，不更動 schema 2.1。
+## Runtime、Polling 與控制順序
 
-Options profiles 使用 `OptionsFlowWithReload`；polling step 設 `automatic_reload=False` 並直接更新 runtime／喚醒 scheduler，無 options update listener。Reconfigure 使用 `async_update_reload_and_abort`。無手動 options update listener／第二次 reload。新 Host 先通過 TCP，才修改 Entry，Entry ID 與 registry 身份保持不變。
+每個 Transport 使用一條 TCP socket 與一個 worker，同時間最多一筆在途請求。控制請求優先於 Poll。控制 queue 有界為 32；相同邏輯 key 的 pending command 使用 latest-wins，新 command 取代尚未執行的舊命令並回報 superseded。已送出的 ADU 不會撤回。Coordinator 逐 Slave 發送並等待單筆 poll，不建立 poll backlog。
 
-HA unload 先確認平台卸載成功，再停止 Hub；失敗保留 runtime。關機事件同樣停止 Coordinator／worker 與 socket。掃描流由 native progress task 取消生命週期與 `async_remove()` 釋放資源。v1.1.2 的 Parent 與 entity unique_id 原地保留；v1.2.0 由 LightEntity forwarding 建立 Child，HA entity registry 會保留 entity_id、名稱與 Area。
+Scheduler 以 bus round 的開始時間計算目標週期；當一輪超過 interval 時立即開始後續工作，不補排積欠的 timer/task。poll request 記錄 monotonic start time。Entity 收到較新的使用者操作後，會忽略操作前已啟動的 poll response，避免舊資料覆寫 optimistic state；後續正常 poll 再校正真實狀態。
+
+Entity control 立即更新 HA optimistic state，再依操作順序提交 Transport。寫入 echo 不直接寫入設備真實 cache；控制失敗保留 optimistic 顯示，交由後續 poll 校正。Gateway failure 會清除 pending control；離線時拒絕新控制，重連後不播放舊指令。
+
+Home Assistant 2026.10／Python 3.14 eager task 行為用於維持同一 loop tick 內 ON／OFF 與 CCT 子指令的提交順序。P404、P210 dimmer 的 brightness／CCT 使用各自的 command key，pending command 合併不會跨不同 register 或 Relay 輸出。
+
+Poll interval 的合法值為 0 或至少 0.5 秒。Polling=0 停止背景 scheduler，但初次 setup 仍做一次 bootstrap read。實體控制、Scanner 與 Monitor 不因背景 Polling=0 停用；HA Update Entity service 仍可要求明確讀取。恢復非零 interval 時喚醒 Coordinator 並重新讀取真實狀態。Paused 狀態重連時不加發 FC03；只恢復先前已確認且連續失敗少於 3 次設備的可用性，狀態仍是最後已知值。這是目前 Runtime 行為，不另存 scheduler backlog 或 uptime。
+
+連續 Slave transaction 失敗達 3 次才標記該 Slave unavailable；成功交易清除失敗計數並恢復。TCP refused／reset／EOF 代表 Gateway disconnect，所有設備 unavailable，reconnect backoff 為 1／2／4／8／15／30 秒，之後上限維持 30 秒。啟動離線由 ConfigEntryNotReady 交給 Home Assistant retry。一般 Slave timeout／CRC 不直接等同整個 Gateway offline；整輪全部失敗時重建 TCP。
+
+## Config Entry 與 HA Registry
+
+Config Entry data 僅保存 `host`／`port`；options 保存 `poll_interval`、`scan_start`、`scan_end` 與 `devices[]`。schema 維持 version 2、minor version 1；舊 schema 不自動猜測遷移。P404 保存兩個 group mode，P210 只保存 `group_a`，R410 不保存 Group。舊 P210 設定缺少 `group_a` 時由 `Device.from_dict()` 預設為 `single`。
+
+Config／Options Flow 使用 Home Assistant native menu／form；新增、修改、移除 pending state 留在 Flow instance，只有明確確認頁才呼叫 `async_create_entry`。新增 selector 只接受本次找到的 New Slave；Existing／Missing 不會被新增流程改寫。Edit 一次修改一台；Remove 為獨立多選流程。確認後以既有 options 為底，只更新 `devices`，保留輪詢、搜尋範圍與未知欄位。
+
+Options 使用 `OptionsFlowWithReload`；輪詢週期 step 設 `automatic_reload=False`，直接更新 runtime 並喚醒 scheduler，不使用 options update listener 或第二次 reload。Reconfigure 使用 `async_update_reload_and_abort`；先測試新 Gateway，成功才替換 Host／Port，保留 Entry ID 與 registry identity。
+
+每個 Slave 有一個 Parent Device；有效輸出使用 Child Device。Native Entity 設 `has_entity_name=True`。Parent identifier 由 Entry ID 與 Slave 組成，Entity unique_id 使用 `{entry_id}_slave_{slave}_chN`、`_group_a`、`_group_b` 或 relay key；不包含 Gateway IP、display name 或 entity_id。Child 的 identifier 沿用 entity unique_id；parent_device_id 指向 HA 真正的 Parent Device Registry ID，不用 `via_device_id` 表示邏輯輸出。
+
+Setup 依 profiles 計算目前有效 unique_id，只移除同 Entry／本整合不再提供的舊輸出。存續 Entity Registry entry 不重建、不改 user name、entity_id、Area 或 automation reference。Group mode 切換只移除受影響 outputs；另一 Group 的 entity 與 metadata 保留。使用者可在 HA 原生 Entity Registry 為各輸出分別指定 Area。整合不設定 suggested_area、不建立 Area 欄位或 mapping database，也不覆寫 Registry Area。已移除 output 若日後重建，HA 不保證還原被刪除 registry item 的 metadata。
+
+HA unload 先確認 platform unload 成功，再停止 Hub；若 platform unload 失敗則保留 runtime。HA shutdown 會停止 Coordinator、Transport worker 與 socket。Scanner progress task 在取消或移除時釋放整輪／submission lock。
+
+Device Registry 移除使用 Home Assistant 2026.10 原生 `async_remove_device` API。只有被移除或不再有效的 Device／Entity 才進入 registry removal；存續項目不以 reload 重建。
+
+## Diagnostics 與多 Gateway 隔離
+
+Diagnostics 只輸出 runtime snapshot；Host／IP 遮罩，不包含密碼、trace history 或其他 HA Device。統計為記憶體計數，restart／reload 歸零。Coordinator round time 從取得輪詢 lock、第一個 configured Slave 開始至本輪最後一個完成；不含輪間等待與掃描 lock 等待。Average 僅取最近 20 輪。不自動調整 polling interval，也不依失聯 Slave 降頻。
+
+Diagnostics 不建立 sensors，不提供可持久化 Trace 或其他裝置資料。Log 只在狀態改變或 queue full 時輸出 warning；逐次通訊細節留在 DEBUG。不因暫時網路異常建立 Repair。
+
+每個 Config Entry 的 socket、queue、polling、devices、cache、statistics 與 monitor trace 都獨立。Integration 不提供跨 Gateway 共用 bus arbitration；部署建議一條 RS485 Bus 由一個 Gateway／Master 管理。不得假設同 Gateway 多個 TCP clients 一定安全。
+
+## Monitor 前後端資料流
+
+Monitor 僅供管理員使用，WebSocket command 僅有 list／subscribe／clear。Backend 每約 500 ms 讀既有 ring、Coordinator health、Transport counters／queue 與 device metadata；只在 snapshot 改變時發布。Monitor helper 不呼叫 Transport submission，不產生 Modbus read/write。後端 TraceBuffer 固定 200 entries，記錄完整 RX frame 與後續交易結果；RX frame 在原 CRC 驗證前記錄，CRC／交易結果再以 OK／ERROR status 追加。trace logger 例外會被隔離，不影響正常通訊。TX／RX／OK／TIMEOUT／CRC ERROR／ERROR 採固定前景狀態色；背景與卡片仍使用 Home Assistant theme variables。
+
+Browser page 的 in-memory history 上限為 1000 entries。Entry stable key 由 timestamp、direction、raw hex、source 與 latency 組成；snapshot merge 先去重，再按 timestamp 排序並保留上限內最新資料。Gateway 切換、Clear 或 page reload 會清空 local history；Clear 同時清 backend trace，保留 Transport statistics。Pause 凍結 render 但仍 ingest snapshot。
+
+Transaction 由 raw entries 分組，stable key 使用交易 TX entry key；孤立狀態則使用該組第一筆 entry key，因此新 entries 插入時選取不依賴 array index。Auto-scroll OFF 會以目前可見 row key 與 viewport offset 保留閱讀位置；原 row 被裁切時用後續 timestamp 定位，沒有後續資料則回到最舊可見 row。重新開啟 Auto-scroll 才回到最新 row。
+
+Sidebar 使用單一主要垂直 scroll context；Decoder 卡片在 normal flow，desktop 內容高度上限為 `min(38vh, 360px)` 並可內部捲動。只有使用者 click Trace row 且 Decoder 超出 Sidebar viewport 時，才呼叫 smooth `scrollIntoView`。Snapshot refresh 會保留 Sidebar scrollTop；filter、pause/resume 不會主動捲動。窄螢幕改為 Sidebar 在 Trace 上方的自然單欄，不對整頁強制 scrollIntoView。Device Health 清單固定最高 240px；通訊統計值直接呈現既有 Transport counters。Caption「自本次啟動起累計」只是文案，沒有 runtime duration／uptime 欄位。
+
+所有 filter、transaction decoder、Device Health 與 counters presentation 都是 frontend view。Monitor 不讀 Recorder、不寫資料庫、不提供任意 Modbus command／register write。
 
 ## 測試與可重現環境
 
-`pyproject.toml`／`uv.lock` 固定測試依賴。HA **2026.10.1**、Python **3.14.7**、`pytest-homeassistant-custom-component` **0.13.372**。
+開發依賴由 `pyproject.toml`／`uv.lock` 固定。基準環境：Home Assistant **2026.10.1**、Python **3.14.7**、pytest-homeassistant-custom-component **0.13.372**。v1.3.3 基線：**440 Python tests、36 frontend tests、99.57% branch coverage**；Config Flow line／branch coverage 要求 100%。
 
-涵蓋：protocol、transport／priority／latest-wins／capacity／取消／重連、scanner／合法回覆／自訂範圍、profiles／register 不重疊、Coordinator／backoff／no backlog／failure isolation、Native Light／optimistic／CCT、完整 native Config／Options／Reconfigure manager、實際 HA platform service、Device／Entity registry／Group 差異、Diagnostics／redaction、setup／unload／關機清理。
+本機檢查命令：
 
-CI 使用 `pytest --cov-branch`，整體最低 99%；`config_flow.py` 行與分支要求 100%。涵蓋率報告由 `coverage.json` 產生，不將環境、fixture 或歷史文件計入產品 coverage。
+```sh
+uv sync --locked --python 3.14
+uv run ruff check custom_components tests
+uv run ruff format --check custom_components tests
+uv lock --check
+uv run pytest --timeout=30 --cov-fail-under=99
+node --test tests/frontend/monitor.test.cjs
+```
 
-## 官方 API 依據
+Node 使用內建 test runner，無額外 frontend dependency。Python 測試使用正式 custom component、Home Assistant APIs 與 loopback Gateway。CI 執行 Ruff、format、frontend tests、完整 pytest、coverage gate 與 translation JSON consistency。Coverage report 輸出為 `coverage.json`；環境程式、fixture 與歷史文件不計入產品 coverage。
 
-以官方文件及已安裝的 HA 2026.10.1 原始碼核對；官方頁面會持續更新，實際相容性依固定版本測試。
+## 官方 API 與架構文件
+
+以官方文件及已安裝的 Home Assistant 2026.10.1 原始碼核對；官方文件會更新，實際相容性以固定版本測試為準。
 
 - [Config Flow／Reconfigure](https://developers.home-assistant.io/docs/config_entries_config_flow_handler/)
 - [Data entry flow／progress task](https://developers.home-assistant.io/docs/data_entry_flow_index/)
@@ -67,40 +128,10 @@ CI 使用 `pytest --cov-branch`，整體最低 99%；`config_flow.py` 行與分�
 - [Config Entry runtime_data](https://developers.home-assistant.io/docs/core/integration-quality-scale/rules/runtime-data/)
 - [Native Light／Kelvin API](https://developers.home-assistant.io/docs/core/entity/light/)
 - [Entity Registry](https://developers.home-assistant.io/docs/entity_registry_index/)
-- [Device registry child devices](https://developers.home-assistant.io/docs/device_registry_index/)
+- [Device Registry child devices](https://developers.home-assistant.io/docs/device_registry_index/)
 - [Diagnostics](https://developers.home-assistant.io/docs/core/integration/diagnostics/)
 - [HACS integration repository](https://www.hacs.xyz/docs/publish/integration/)
+- [v1.3.0 DeviceProfile／R410 architecture](v1.3.0-architecture.md)
+- [實機驗收 checklist](v1.0-acceptance.md)
 
-這些來源確認 HA／HACS API，**不證明 Coselig 特有 register、高 byte、CCT 接線或 Gateway timeout 特性**。實機仍依 [驗收 Checklist](v1.0-acceptance.md) 留存結果。
-
-## v1.1 行為
-
-TCP 成功後先顯示範圍，首次1～247；按開始搜尋才建立progress task。初次搜尋結果必須明確勾選Slave，再指定型號／Group。既有保存範圍不改寫。取消不保存未完成的範圍，也不關閉已載入Hub。
-
-Polling=0 只讓背景scheduler等待Event，既有狀態／failure保留，寫入與scan不受停輪詢影響。0→非零立即喚醒、讀取真實狀態。起動時仍有單次bootstrap read；paused reconnect不發FC03，只恢復已確認且failure<3的可用性。
-
-20輪時間deque只量測bus round，不含lock等待／下一輪sleep；不自動調interval或降頻Slave。原生 Entity／Child Device Registry 的 area_id 完全由 HA 與使用者管理，不加入 area 欄位或 mapping table。
-
-Monitor訂閱每0.5秒讀取ring、Coordinator health／round time、Transport counters／queue 與Configured Device metadata，只在整體快照變更時推送；helper只取runtime記憶體，沒有任何Transport.submit／Modbus I/O。Backend TraceBuffer維持200筆；Monitor browser page另外在記憶體累積最多1000筆暫存歷史，reload、Gateway切換與Clear後清除，不用LocalStorage／Recorder／database。Sidebar依序顯示閘道器、封包解析、設備狀態、通訊統計；左右欄在desktop各自捲動。Slave／Type filter、裝置點擊與Auto-scroll都只有前端效果。transaction grouping由Raw entries推導，Decoder涵蓋FC01～FC06與FC81～FC86 exception；Trace status保留CRC權威判定。Pause只凍結render但仍ingest snapshot。Auto-scroll OFF以entry stable key與viewport offset保持閱讀位置；選取封包以transaction stable key保存。所有WS命令要求admin，只提供list／subscribe／clear，沒有register或設定寫入。Trace例外隔離；完整RX記錄在原CRC驗證前，結果之後另記OK／ERROR及latency。狀態色維持固定TX／RX／OK／TIMEOUT／CRC ERROR／ERROR，背景與卡片使用HA theme variables。
-
-## v1.1.1 行為
-
-P210 的 Group A 可選 `single` 或 `cct`；single 建立 CH1／CH2，cct 只建立 `group_a` 雙色溫 entity，兩者均固定 FC03 起點 `0x082A`、count 2。P404 的 Group A／B 行為不變。切換輸出模式沿用既有 registry 差異清理與原生 Area／名稱保存策略。
-
-## v1.3.0 baseline
-
-詳見 [v1.3.0 architecture](v1.3.0-architecture.md)。R410 只建立四個 Switch；FC02 僅供 Scanner identification，無 DI runtime poll 或 entity。
-
-## v1.3.1 UI 行為
-
-Config Flow options 以 HA Native menu/form 實作，不新增 frontend；Flow 管理器在確認摘要前不呼叫 `async_create_entry`。既有 Device 只在獨立 Edit／Remove intents 被選取，Add 的 selector 僅接受 New Slave，Missing 保留。對未修改 Slave 重新序列化的是原 `Device` profile 的值，entity registry identities、Parent／Child identifiers、Area 與自訂名稱策略維持不變。Entry version/minor version仍是2.1。
-
-Diagnostic Monitor 擴充原有 subscribe snapshot，保留list／subscribe／clear三種WebSocket commands與約500ms changed-only publish。前端只衍生 transaction、filter及decoder view，不建立Graph，也不增加Modbus request；Clear清Trace ring與browser local history，不清Transport counters。
-
-## v1.3.2 UI 與品牌行為
-
-Monitor仍是唯讀 observer。Backend的200筆TraceBuffer不變；前端最多保存1000筆目前頁面生命週期的local history，pause期間持續ingest。自動捲動關閉時，以entry key、timestamp fallback與row offset恢復viewport anchor；transaction選取使用TX／第一筆entry的stable key。Desktop固定viewport工作區讓Trace與Sidebar獨立捲動，封包解析置頂，設備清單最高240px。Monitor主要標題與Card labels使用繁體中文。對外型號只稱Coselig P404、P210、R410。
-
-## v1.3.3 Monitor UX
-
-Packet Decoder 卡片在 Sidebar 正常流動，不使用 sticky；內容最高 `min(38vh, 360px)` 並可內部捲動。只有使用者點選封包且 Decoder 超出 Sidebar 可視範圍時才呼叫 `scrollIntoView`；snapshot、filter、pause/resume 不主動捲動，snapshot render 保留 Sidebar scrollTop。通訊統計 caption 為「自本次啟動起累計」，是次要說明文字，不是 metric。沒有 uptime 欄位或 backend 修改；Monitor 仍只訂閱既有 snapshot，零新增 Modbus request。
+官方來源確認 Home Assistant／HACS API，不證明 Coselig 特有 register map、dimmer byte 語意、CCT wiring 或 Gateway timeout 特性；這些仍依設備規格及實機驗收。
