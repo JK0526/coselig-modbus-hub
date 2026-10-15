@@ -1,4 +1,4 @@
-# v1.3.2 開發架構與驗證依據
+# v1.3.3 開發架構與驗證依據
 
 更新：2026-10-15。v1.0 取代 v0.2.x 的 MQTT／Panel／Channel 架構；歷史問題盤點保留於 `docs/specs/`，不作新版開發規範。
 
@@ -100,3 +100,7 @@ Diagnostic Monitor 擴充原有 subscribe snapshot，保留list／subscribe／cl
 ## v1.3.2 UI 與品牌行為
 
 Monitor仍是唯讀 observer。Backend的200筆TraceBuffer不變；前端最多保存1000筆目前頁面生命週期的local history，pause期間持續ingest。自動捲動關閉時，以entry key、timestamp fallback與row offset恢復viewport anchor；transaction選取使用TX／第一筆entry的stable key。Desktop固定viewport工作區讓Trace與Sidebar獨立捲動，封包解析置頂，設備清單最高240px。Monitor主要標題與Card labels使用繁體中文。對外型號只稱Coselig P404、P210、R410。
+
+## v1.3.3 Monitor UX
+
+Packet Decoder 卡片在 Sidebar 正常流動，不使用 sticky；內容最高 `min(38vh, 360px)` 並可內部捲動。只有使用者點選封包且 Decoder 超出 Sidebar 可視範圍時才呼叫 `scrollIntoView`；snapshot、filter、pause/resume 不主動捲動，snapshot render 保留 Sidebar scrollTop。通訊統計 caption 為「自本次啟動起累計」，是次要說明文字，不是 metric。沒有 uptime 欄位或 backend 修改；Monitor 仍只訂閱既有 snapshot，零新增 Modbus request。

@@ -53,10 +53,11 @@ class CoseligModbusMonitor extends HTMLElement {
         .trace-time,.trace-latency{color:var(--secondary-text-color);white-space:nowrap}.trace-tx,.trace-raw-tx{color:#42a5f5}.trace-rx,.trace-ok,.trace-raw-rx{color:#66bb6a}.trace-timeout{color:#ffb74d}.trace-crc-error,.trace-error{color:#ef5350}
         .trace-raw{display:block;min-width:0;overflow-x:auto;white-space:pre}.trace-status{white-space:pre}.trace-latency{text-align:right}
         .metric-grid{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:5px 10px;margin:0;font-size:13px}.metric-grid dt{color:var(--secondary-text-color)}.metric-grid dd{margin:0;text-align:right;font-variant-numeric:tabular-nums}
-        .stats-grid{display:grid;grid-template-columns:1fr 1fr;gap:2px 12px}.stat{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:4px 2px;border-bottom:1px solid var(--divider-color)}.stat span{color:var(--secondary-text-color);font-size:12px}.stat strong{font-size:14px;font-variant-numeric:tabular-nums}.stats-caption{grid-column:1/-1;margin:4px 0 0;color:var(--secondary-text-color);font-size:11px}
+        .stats-grid{display:grid;grid-template-columns:1fr 1fr;gap:2px 12px}.stat{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:4px 2px;border-bottom:1px solid var(--divider-color)}.stat span{color:var(--secondary-text-color);font-size:12px}.stat strong{font-size:14px;font-variant-numeric:tabular-nums}
+        .section-caption{margin:-6px 0 8px;color:var(--secondary-text-color);font-size:11px}
         .device-list{display:grid;gap:4px;max-height:240px;overflow-y:auto}.device-row{width:100%;display:flex;align-items:center;justify-content:space-between;gap:8px;text-align:left;border:0;padding:6px 7px}.device-row.active{outline:1px solid var(--primary-color)}.device-main{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.device-health{white-space:nowrap;color:var(--secondary-text-color);font-size:12px}.online{color:var(--success-color,var(--primary-text-color))}.offline{color:var(--error-color)}
-        .decoder-card{position:sticky;top:0;z-index:1}.decoder-grid{display:grid;grid-template-columns:minmax(100px,auto) minmax(0,1fr);gap:5px 9px;margin:0;max-height:43vh;overflow-y:auto;font-size:13px}.decoder-grid dt{color:var(--secondary-text-color)}.decoder-grid dd{margin:0;overflow-wrap:anywhere}.empty{color:var(--secondary-text-color);padding:10px 4px}
-        @media(max-width:900px){:host{height:auto;min-height:100vh;min-height:100dvh;overflow:visible}.layout{grid-template-columns:minmax(0,1fr);grid-template-areas:"sidebar" "trace";flex:none;min-height:auto;overflow:visible}.sidebar{height:auto;overflow:visible}.trace-list{flex:none;min-height:120px;max-height:55vh}.decoder-card{position:static}.decoder-grid{max-height:40vh}}
+        .decoder-card{position:static}.decoder-grid{display:grid;grid-template-columns:minmax(100px,auto) minmax(0,1fr);gap:5px 9px;margin:0;max-height:min(38vh,360px);overflow-y:auto;font-size:13px}.decoder-grid dt{color:var(--secondary-text-color)}.decoder-grid dd{margin:0;overflow-wrap:anywhere}.empty{color:var(--secondary-text-color);padding:10px 4px}
+        @media(max-width:900px){:host{height:auto;min-height:100vh;min-height:100dvh;overflow:visible}.layout{grid-template-columns:minmax(0,1fr);grid-template-areas:"sidebar" "trace";flex:none;min-height:auto;overflow:visible}.sidebar{height:auto;overflow:visible}.trace-list{flex:none;min-height:120px;max-height:55vh}.decoder-grid{max-height:40vh}}
         @media(max-width:560px){:host{padding:12px}.trace-entry{grid-template-columns:70px 65px minmax(0,1fr);gap:5px;font-size:11px}.trace-latency{grid-column:3;text-align:left}.stats-grid{grid-template-columns:1fr 1fr}}
       </style>
       <header><h1>Coselig Modbus 診斷監控</h1></header>
@@ -72,19 +73,19 @@ class CoseligModbusMonitor extends HTMLElement {
       <div id="error" role="alert"></div>
       <div class="layout">
         <section class="card trace-panel"><h2>原始封包</h2><div id="trace" class="trace-list" aria-label="Modbus Raw HEX"></div></section>
-        <aside class="sidebar">
+        <aside id="sidebar" class="sidebar">
           <section class="card"><h2>閘道器</h2><dl class="metric-grid">
             <dt>狀態</dt><dd id="gateway-status" aria-live="polite">等待資料</dd><dt>輪詢</dt><dd id="gateway-poll">—</dd>
             <dt>設備</dt><dd id="gateway-devices">—</dd><dt>最近輪詢</dt><dd id="gateway-last">—</dd>
             <dt>平均輪詢</dt><dd id="gateway-average">—</dd><dt>佇列</dt><dd id="gateway-queue">—</dd>
             <dt>佇列峰值</dt><dd id="gateway-queue-peak">—</dd>
           </dl></section>
-          <section class="card decoder-card"><h2>封包解析</h2><dl id="decoder" class="decoder-grid"><dd class="empty">選取一筆封包以檢視內容。</dd></dl></section>
+          <section id="decoder-card" class="card decoder-card"><h2>封包解析</h2><dl id="decoder" class="decoder-grid"><dd class="empty">選取一筆封包以檢視內容。</dd></dl></section>
           <section class="card"><h2>設備狀態 <small id="device-summary">0 / 0 在線</small></h2><div id="devices" class="device-list"></div></section>
-          <section class="card"><h2>通訊統計</h2><div class="stats-grid">
+          <section class="card"><h2>通訊統計</h2><div id="stats-caption" class="section-caption">自本次啟動起累計</div><div id="stats-grid" class="stats-grid">
             <div class="stat"><span>成功</span><strong id="stat-success">0</strong></div><div class="stat"><span>失敗</span><strong id="stat-failed">0</strong></div>
             <div class="stat"><span>逾時</span><strong id="stat-timeout">0</strong></div><div class="stat"><span>CRC 錯誤</span><strong id="stat-crc">0</strong></div>
-            <div class="stat"><span>重新連線</span><strong id="stat-reconnect">0</strong></div><small class="stats-caption">本次執行期間</small>
+            <div class="stat"><span>重新連線</span><strong id="stat-reconnect">0</strong></div>
           </div></section>
         </aside>
       </div>`;
@@ -223,6 +224,8 @@ class CoseligModbusMonitor extends HTMLElement {
 
   _render() {
     if (!this._latest) return;
+    const sidebar = this.shadowRoot.querySelector("#sidebar");
+    const sidebarScrollTop = sidebar.scrollTop;
     const snapshot = this._latest;
     const coordinator = snapshot.coordinator || {};
     const stats = snapshot.statistics || {};
@@ -244,6 +247,7 @@ class CoseligModbusMonitor extends HTMLElement {
     this._renderTrace({ preserveAnchor: true });
     const selected = this._transactions.find((transaction) => transaction.key === this._selectedTransactionKey);
     this._renderDecoder(selected || null);
+    if (sidebar.scrollTop !== sidebarScrollTop) sidebar.scrollTop = sidebarScrollTop;
   }
 
   _filterChanged() {
@@ -310,7 +314,12 @@ class CoseligModbusMonitor extends HTMLElement {
         row.className = `trace-entry trace-${classKey}${this._selectedTransactionKey === transaction.key ? " selected" : ""}`;
         row.dataset.entryKey = CoseligModbusMonitor.entryKey(entry);
         row.dataset.entryTimestamp = String(entry.timestamp ?? "");
-        row.onclick = () => { this._selectedTransactionKey = transaction.key; this._renderTrace({ preserveAnchor: true }); this._renderDecoder(transaction, devices); };
+        row.onclick = () => {
+          this._selectedTransactionKey = transaction.key;
+          this._renderTrace({ preserveAnchor: true });
+          this._renderDecoder(transaction, devices);
+          this._scrollDecoderIntoViewIfNeeded();
+        };
         const timestamp = document.createElement("span"); timestamp.className = "trace-time"; timestamp.textContent = time;
         const direction = document.createElement("span"); direction.className = `trace-status trace-${classKey}`; direction.textContent = status.padEnd(9);
         const raw = document.createElement("span"); raw.className = `trace-raw${status === "TX" || status === "RX" ? ` trace-raw-${status.toLowerCase()}` : ""}`; raw.textContent = entry.raw_hex || "";
@@ -374,6 +383,17 @@ class CoseligModbusMonitor extends HTMLElement {
       const dt = document.createElement("dt"); dt.textContent = label;
       const dd = document.createElement("dd"); dd.textContent = value;
       decoder.append(dt, dd);
+    }
+  }
+
+  _scrollDecoderIntoViewIfNeeded() {
+    const sidebar = this.shadowRoot.querySelector("#sidebar");
+    const decoderCard = this.shadowRoot.querySelector("#decoder-card");
+    if (!sidebar || !decoderCard || sidebar.scrollHeight <= sidebar.clientHeight) return;
+    const sidebarBounds = sidebar.getBoundingClientRect();
+    const decoderBounds = decoderCard.getBoundingClientRect();
+    if (decoderBounds.top < sidebarBounds.top || decoderBounds.bottom > sidebarBounds.bottom) {
+      decoderCard.scrollIntoView?.({ block: "nearest", behavior: "smooth" });
     }
   }
 

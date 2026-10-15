@@ -1,4 +1,4 @@
-# Coselig Modbus Hub v1.3.2
+# Coselig Modbus Hub v1.3.3
 
 將 Coselig **P404／P210 PWM Dimmer 與 R410 Relay** 透過 TCP／RS485 Gateway 加入 Home Assistant，直接建立 Native LightEntity／SwitchEntity。設備與連線設定全走 HA 原生介面；不需要 MQTT、Node-RED 或 YAML。新增的唯讀 Modbus Monitor 只顯示通訊封包，不提供設備管理或寫入工具。
 
@@ -7,7 +7,7 @@ P404 / P210 / R410 → RS485 → TCP Gateway → RTU Transport → Profile + Coo
                                              └→ Memory Trace        └→ Light / Switch
 ```
 
-套件 **1.3.2**，domain `coselig_modbus_hub`，Config Entry schema `2.1`。最低 HA Core **2026.10.0**；本機測試使用 **2026.10.1／Python 3.14.7**。
+套件 **1.3.3**，domain `coselig_modbus_hub`，Config Entry schema `2.1`。最低 HA Core **2026.10.0**；本機測試使用 **2026.10.1／Python 3.14.7**。
 
 ## 安裝與第一次設定
 
@@ -51,10 +51,10 @@ Group A 使用 CH1＋CH2，Group B 使用 CH3＋CH4。CCT 沿用第一個 regist
 
 管理員登入後，左側 **Coselig Modbus Monitor** 開啟診斷儀表板。桌面版以 viewport 高度工作區分成左側原始封包與右側診斷 Sidebar，兩欄各自捲動；窄畫面改成單欄。閘道器選擇、Slave／類型篩選、清除、暫停畫面與自動捲動都在工具列。
 
-Sidebar 依序顯示閘道器、封包解析、設備狀態及通訊統計。設備狀態清單固定高度並可獨立捲動；封包解析靠近 Sidebar 上方。內容包含：
+Sidebar 依序顯示閘道器、封包解析、設備狀態及通訊統計，卡片隨 Sidebar 正常捲動。封包解析內容有高度上限並可在卡片內捲動；使用者點選封包時，只有 Decoder 不在 Sidebar 可視範圍才會將它平滑帶入視野。快照更新、篩選及暫停／恢復不會主動捲動 Sidebar。設備狀態清單固定高度並可獨立捲動。內容包含：
 
 - Gateway connected、Polling、可用／設定 Slave 數、最近與平均輪詢耗時、Queue 深度與峰值。
-- 本次執行期間的成功／失敗／逾時／CRC 錯誤／重新連線統計。
+- 自本次啟動起累計的成功／失敗／逾時／CRC 錯誤／重新連線統計。
 - 每個 configured Slave 的型號、在線／離線與連續失敗數；點選 Slave 只改前端封包篩選，再點一次可恢復全部。
 - 點選任一封包列可查看 transaction 的 Request／Response、Slave、Function、用途、輸出語意、Latency 與結果。
 
@@ -154,6 +154,8 @@ Round time 從取得輪詢 lock、開始第一個 configured Slave 到本輪最�
 
 **v1.3.1 → v1.3.2**：Entry schema 維持 2.1，無需重建 Hub。Monitor 改用最多 1000 筆的瀏覽器暫存歷史、穩定封包錨點與選取 key，並提供左右欄獨立捲動及繁體中文介面。Protocol、輪詢及 Queue 行為不變，沒有額外 Modbus request。型號與文件採 Coselig 品牌命名。
 
+**v1.3.2 → v1.3.3**：Entry schema 維持 2.1。Monitor Decoder 不再固定於 Sidebar 頂端；只在使用者點選封包且 Decoder 超出可視範圍時才平滑捲入視野，快照更新保留 Sidebar 位置。通訊統計以「自本次啟動起累計」作為說明文字，不新增 uptime 或 backend 欄位。無 Modbus runtime 行為變更。
+
 **v0.2.x → v1.x** 仍是 Clean Break：先備份 HA，移除舊 Entry，更新、重啟並重新新增。舊 MQTT retained Discovery／實體／自動化需自行檢查清理；新版不連 broker。正式切換前停用寫入相同設備的舊流程。
 
 - 使用帶 CRC 的 RTU over TCP，不是 MBAP Modbus TCP。
@@ -175,4 +177,4 @@ node --test tests/frontend/monitor.test.cjs
 
 Python 測試直接使用正式 custom component、HA APIs 與 loopback Gateway；前端以 Node 內建 runner 獨立測試，不計入 Python coverage。Config Flow 行／分支要求100%，整體 coverage≥99%。
 
-詳見 [v1.3.2 發布說明](docs/v1.3.2-release-notes.md)、[v1.3.1 發布說明](docs/v1.3.1-release-notes.md)、[v1.3.0 發布說明](docs/v1.3.0-release-notes.md)、[v1.3.0 架構](docs/v1.3.0-architecture.md)、[v1.2.1 發布說明](docs/v1.2.1-release-notes.md)、[v1.2.0 發布說明](docs/v1.2.0-release-notes.md)、[v1.1.2 發布說明](docs/v1.1.2-release-notes.md)、[v1.1.1 發布說明](docs/v1.1.1-release-notes.md)、[v1.1 實作與發布報告](docs/v1.1-implementation-report.md)、[開發架構](docs/development.md)、[實機驗收清單](docs/v1.0-acceptance.md)。**尚未完成 24～48 小時實機 soak test，測試通過不代表現場全部功能已驗收。**
+詳見 [v1.3.3 發布說明](docs/v1.3.3-release-notes.md)、[v1.3.2 發布說明](docs/v1.3.2-release-notes.md)、[v1.3.1 發布說明](docs/v1.3.1-release-notes.md)、[v1.3.0 發布說明](docs/v1.3.0-release-notes.md)、[v1.3.0 架構](docs/v1.3.0-architecture.md)、[v1.2.1 發布說明](docs/v1.2.1-release-notes.md)、[v1.2.0 發布說明](docs/v1.2.0-release-notes.md)、[v1.1.2 發布說明](docs/v1.1.2-release-notes.md)、[v1.1.1 發布說明](docs/v1.1.1-release-notes.md)、[v1.1 實作與發布報告](docs/v1.1-implementation-report.md)、[開發架構](docs/development.md)、[實機驗收清單](docs/v1.0-acceptance.md)。**尚未完成 24～48 小時實機 soak test，測試通過不代表現場全部功能已驗收。**

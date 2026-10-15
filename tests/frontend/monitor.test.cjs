@@ -17,15 +17,21 @@ class Element {
     this.className = '';
     this.scrollTop = 0;
     this.clientHeight = 60;
+    this._scrollHeight = null;
+    this._rect = null;
+    this.scrollIntoViewCalls = [];
     this.parentNode = null;
     this.disabled = false;
   }
   get textContent() { return this._text + this.children.map((child) => child.textContent).join(''); }
   set textContent(value) { this._text = String(value); this.children = []; }
-  get scrollHeight() { return this.children.length * 10; }
+  get scrollHeight() { return this._scrollHeight ?? this.children.length * 10; }
+  set scrollHeight(value) { this._scrollHeight = value; }
   replaceChildren(...children) { this._text = ''; this.children = children; for (const child of children) child.parentNode = this; }
   append(...children) { this.children.push(...children); for (const child of children) child.parentNode = this; }
+  scrollIntoView(options) { this.scrollIntoViewCalls.push(options); }
   getBoundingClientRect() {
+    if (this._rect) return this._rect;
     if (this.parentNode) {
       const index = this.parentNode.children.indexOf(this);
       const top = this.parentNode.getBoundingClientRect().top + index * 10 - this.parentNode.scrollTop;
@@ -40,7 +46,7 @@ const selectors = [
   '#error', '#trace', '#gateway-status', '#gateway-poll', '#gateway-devices',
   '#gateway-last', '#gateway-average', '#gateway-queue', '#gateway-queue-peak',
   '#stat-success', '#stat-failed', '#stat-timeout', '#stat-crc', '#stat-reconnect',
-  '#devices', '#device-summary', '#decoder',
+  '#devices', '#device-summary', '#decoder', '#sidebar', '#decoder-card', '#stats-caption', '#stats-grid',
 ];
 class Shadow {
   constructor() { this.nodes = Object.fromEntries(selectors.map((id) => [id, new Element(id === '#auto-scroll' ? 'input' : 'div')])); }
@@ -152,10 +158,11 @@ test('diagnostic cards render gateway runtime metrics, counters and slave health
   assert.equal(node('#gateway-queue-peak'), '24');
   assert.equal(node('#stat-success'), '1584'); assert.equal(node('#stat-failed'), '4');
   assert.equal(node('#stat-timeout'), '3'); assert.equal(node('#stat-crc'), '1'); assert.equal(node('#stat-reconnect'), '2');
+  assert.match(monitorSource, /<div id="stats-caption" class="section-caption">自本次啟動起累計<\/div>/);
+  assert.doesNotMatch(monitorSource, /本次執行期間/);
   const rows = h.panel.shadowRoot.querySelector('#devices').children;
   assert.match(rows[0].textContent, /#63 R410.*在線/);
   assert.match(rows[1].textContent, /#70 P404.*離線.*失敗 2 次/);
-  assert.match(monitorSource, /本次執行期間/);
   h.panel.disconnectedCallback();
 });
 
@@ -354,10 +361,116 @@ test('responsive viewport workspace gives the trace and sidebar independent scro
   assert.match(monitorSource, /\.trace-list\{flex:1;min-height:0;overflow:auto;min-width:0\}/);
   assert.match(monitorSource, /\.sidebar\{[^}]*height:100%;min-height:0;overflow-y:auto/);
   assert.match(monitorSource, /\.device-list\{display:grid;gap:4px;max-height:240px;overflow-y:auto\}/);
-  assert.match(monitorSource, /\.decoder-card\{position:sticky;top:0;z-index:1\}/);
-  assert.match(monitorSource, /\.decoder-grid\{[^}]*max-height:43vh;overflow-y:auto/);
+  assert.match(monitorSource, /\.decoder-card\{position:static\}/);
+  assert.doesNotMatch(monitorSource, /position:\s*sticky/);
+  assert.match(monitorSource, /\.decoder-grid\{[^}]*max-height:min\(38vh,360px\);overflow-y:auto/);
   assert.match(monitorSource, /@media\(max-width:900px\)\{\:host\{height:auto;min-height:100vh;min-height:100dvh;overflow:visible\}/);
+  assert.match(monitorSource, /@media\(max-width:900px\)[\s\S]*?\.sidebar\{height:auto;overflow:visible\}/);
+  assert.match(monitorSource, /@media\(max-width:900px\)[^\n]*\.decoder-grid\{max-height:40vh\}/);
+  assert.match(monitorSource, /grid-template-areas:"sidebar" "trace"/);
   assert.match(monitorSource, /\.trace-raw\{display:block;min-width:0;overflow-x:auto;white-space:pre\}/);
+});
+
+test('Decoder card uses normal flow, bounded inner scrolling, and stats caption stays outside metrics', async () => {
+  const h = createHarness(); await h.flush(); h.subscriptions[0].callback(snapshot());
+  const statsCard = monitorSource.match(/<section class="card"><h2>通訊統計<\/h2>([\s\S]*?)<\/section>/)?.[1] || '';
+  assert.match(statsCard, /<div id="stats-caption" class="section-caption">自本次啟動起累計<\/div><div id="stats-grid" class="stats-grid">/);
+  assert.doesNotMatch(statsCard, /本次執行期間/);
+  const metrics = statsCard.split('<div id="stats-grid" class="stats-grid">')[1];
+  assert.ok(metrics);
+  assert.doesNotMatch(metrics, /section-caption|stats-caption/);
+  assert.match(monitorSource, /\.section-caption\{margin:-6px 0 8px;color:var\(--secondary-text-color\);font-size:11px\}/);
+  assert.match(h.panel.shadowRoot.querySelector('#devices').textContent, /#63 R410/);
+  assert.equal(h.panel.shadowRoot.querySelector('#stat-success').textContent, '1584');
+  assert.doesNotMatch(monitorSource, /started_at|uptime_seconds|elapsed_seconds/);
+  assert.equal(Object.hasOwn(snapshot(), 'started_at'), false);
+  assert.equal(Object.hasOwn(snapshot(), 'uptime_seconds'), false);
+  h.panel.disconnectedCallback();
+});
+
+test('Decoder scrollIntoView runs only on a user click when the Decoder is outside the desktop Sidebar viewport', async () => {
+  const h = createHarness(); await h.flush();
+  const sidebar = h.panel.shadowRoot.querySelector('#sidebar');
+  const decoderCard = h.panel.shadowRoot.querySelector('#decoder-card');
+  sidebar.clientHeight = 200;
+  sidebar.scrollHeight = 600;
+  sidebar._rect = { top: 0, bottom: 200 };
+  decoderCard._rect = { top: 240, bottom: 360 };
+  h.subscriptions[0].callback(snapshot([entry('TX', '3F 05 00 01 FF 00 00 00'), entry('RX', '3F 05 00 01 FF 00 00 00'), entry('OK', '', 5)]));
+  assert.equal(decoderCard.scrollIntoViewCalls.length, 0);
+
+  sidebar.scrollTop = 45;
+  h.subscriptions[0].callback(snapshot([entry('TX', '3F 05 00 01 FF 00 00 00'), entry('RX', '3F 05 00 01 FF 00 00 00'), entry('OK', '', 5)]));
+  assert.equal(sidebar.scrollTop, 45);
+  assert.equal(decoderCard.scrollIntoViewCalls.length, 0);
+
+  h.panel.shadowRoot.querySelector('#pause').onclick();
+  h.subscriptions[0].callback(snapshot([entry('TX', 'NEW'), entry('RX', 'NEW RESPONSE')]));
+  assert.equal(decoderCard.scrollIntoViewCalls.length, 0);
+  h.panel.shadowRoot.querySelector('#pause').onclick();
+  assert.equal(decoderCard.scrollIntoViewCalls.length, 0);
+
+  h.panel.shadowRoot.querySelector('#type-filter').value = 'TX';
+  h.panel.shadowRoot.querySelector('#type-filter').onchange();
+  assert.equal(decoderCard.scrollIntoViewCalls.length, 0);
+  h.panel.shadowRoot.querySelector('#type-filter').value = 'all';
+  h.panel.shadowRoot.querySelector('#type-filter').onchange();
+  h.panel.shadowRoot.querySelector('#trace').children[1].onclick();
+  assert.match(h.panel.shadowRoot.querySelector('#decoder').textContent, /Result/);
+  assert.equal(decoderCard.scrollIntoViewCalls.length, 1);
+  assert.equal(decoderCard.scrollIntoViewCalls[0].block, 'nearest');
+  assert.equal(decoderCard.scrollIntoViewCalls[0].behavior, 'smooth');
+  h.panel.disconnectedCallback();
+});
+
+test('Selecting a transaction does not scroll Decoder when it is already visible', async () => {
+  const h = createHarness(); await h.flush();
+  const sidebar = h.panel.shadowRoot.querySelector('#sidebar');
+  const decoderCard = h.panel.shadowRoot.querySelector('#decoder-card');
+  sidebar.clientHeight = 200;
+  sidebar.scrollHeight = 600;
+  sidebar._rect = { top: 0, bottom: 200 };
+  decoderCard._rect = { top: 40, bottom: 160 };
+  h.subscriptions[0].callback(snapshot([entry('TX', '3F 03 00 00 00 01')]));
+  h.panel.shadowRoot.querySelector('#trace').children[0].onclick();
+  assert.match(h.panel.shadowRoot.querySelector('#decoder').textContent, /Function/);
+  assert.equal(decoderCard.scrollIntoViewCalls.length, 0);
+  h.panel.disconnectedCallback();
+});
+
+test('Mobile single-column layout keeps Sidebar in normal flow and does not scroll the page on trace click', async () => {
+  const h = createHarness(); await h.flush();
+  const sidebar = h.panel.shadowRoot.querySelector('#sidebar');
+  const decoderCard = h.panel.shadowRoot.querySelector('#decoder-card');
+  sidebar.clientHeight = 360;
+  sidebar.scrollHeight = 360;
+  sidebar._rect = { top: 0, bottom: 360 };
+  decoderCard._rect = { top: 520, bottom: 640 };
+  h.subscriptions[0].callback(snapshot([entry('TX', '3F 03 00 00 00 01')]));
+  h.panel.shadowRoot.querySelector('#trace').children[0].onclick();
+  assert.equal(decoderCard.scrollIntoViewCalls.length, 0);
+  h.panel.disconnectedCallback();
+});
+
+test('Snapshot and resumed renders preserve Sidebar position without backend uptime fields', async () => {
+  const h = createHarness(); await h.flush();
+  const sidebar = h.panel.shadowRoot.querySelector('#sidebar');
+  sidebar.scrollTop = 72;
+  const renderDecoder = h.panel._renderDecoder.bind(h.panel);
+  h.panel._renderDecoder = (...args) => { sidebar.scrollTop = 0; renderDecoder(...args); };
+  h.subscriptions[0].callback(snapshot());
+  assert.equal(sidebar.scrollTop, 72);
+  h.panel.shadowRoot.querySelector('#pause').onclick();
+  h.subscriptions[0].callback(snapshot([entry('TX', 'NEW')]));
+  assert.equal(sidebar.scrollTop, 72);
+  h.panel.shadowRoot.querySelector('#pause').onclick();
+  assert.equal(sidebar.scrollTop, 72);
+  const snapshotCall = h.calls.find((call) => call.type.endsWith('/list'));
+  assert.deepEqual(Object.keys(snapshot()).sort(), [
+    'connected', 'coordinator', 'devices', 'entries', 'poll_interval', 'polling_paused', 'statistics',
+  ]);
+  assert.equal(snapshotCall.type, 'coselig_modbus_hub/monitor/list');
+  h.panel.disconnectedCallback();
 });
 
 test('diagnostic cards and Monitor title use Traditional Chinese', () => {
