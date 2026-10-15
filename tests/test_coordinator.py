@@ -6,6 +6,7 @@ import pytest
 from custom_components.coselig_modbus_hub.coordinator import Coordinator
 from custom_components.coselig_modbus_hub.hub import Hub
 from custom_components.coselig_modbus_hub.models import Device, Model
+from custom_components.coselig_modbus_hub.protocol import write_single_register
 from custom_components.coselig_modbus_hub.transport import (
     GatewayError,
     OfflineError,
@@ -105,6 +106,45 @@ async def test_no_extra_read_write_failure(gateway, coordinator):
         )
     assert [r[1] for r in gateway.requests] == [6, 6]
     assert coordinator.states[1].available
+
+
+async def test_action_command_requires_confirmed_available_slave(gateway, coordinator):
+    await coordinator.async_poll_round()
+    gateway.requests.clear()
+    request = write_single_register(1, 0x019B, 0x0501)
+    await coordinator.async_action_command(1, request)
+    assert gateway.requests == [request]
+
+    coordinator.scanning = True
+    with pytest.raises(OfflineError):
+        await coordinator.async_action_command(1, request)
+    coordinator.scanning = False
+    coordinator.states[1].available = False
+    with pytest.raises(OfflineError):
+        await coordinator.async_action_command(1, request)
+    coordinator.states[1].available = True
+    coordinator.gateway_available = False
+    with pytest.raises(OfflineError):
+        await coordinator.async_action_command(1, request)
+    assert gateway.requests == [request]
+
+
+@pytest.mark.parametrize("runtime_paused,poll_interval", [(False, 0), (True, 2)])
+async def test_action_control_works_when_background_poll_is_disabled_or_paused(
+    hass, gateway, runtime_paused, poll_interval
+):
+    transport = Transport("127.0.0.1", gateway.port, timeout=0.025)
+    coordinator = Coordinator(hass, transport, (Device(1, Model.R410),), poll_interval)
+    try:
+        await coordinator.async_poll_round()
+        coordinator.set_runtime_poll_paused(runtime_paused)
+        request = write_single_register(1, 0x019B, 0x0503)
+        await coordinator.async_action_command(1, request)
+        assert gateway.requests[-1] == request
+        assert coordinator.states[1].available
+    finally:
+        await coordinator.stop()
+        await transport.close()
 
 
 async def test_write_tcp_failure(gateway, coordinator):

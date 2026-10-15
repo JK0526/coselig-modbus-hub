@@ -7,10 +7,13 @@ import copy
 import ipaddress
 import re
 from typing import Any
+from uuid import uuid4
 
 import probatio as vol
 from homeassistant import config_entries
+from homeassistant.components.cover import CoverDeviceClass
 from homeassistant.config_entries import ConfigFlowResult
+from homeassistant.const import Platform
 from homeassistant.core import callback
 from homeassistant.helpers import selector
 
@@ -23,6 +26,13 @@ from .const import (
 )
 from .coordinator import valid_poll_interval
 from .models import Device, GroupMode, Model, devices_from_options
+from .r410_cover import (
+    R410CoverConfig,
+    R410CoverConfigError,
+    R410CoverMode,
+    parse_r410_cover,
+    r410_covers_from_options,
+)
 from .s402 import S402_ID_MAX, S402_ID_MIN, s402_devices_from_options
 from .scanner import ScanResult, scan
 from .transport import GatewayError, Transport
@@ -121,6 +131,11 @@ class ProfileFlow:
         self._s402_ids: list[int] = []
         self._s402_pending_id: int | None = None
         self._s402_remove_selected: list[int] = []
+        self._r410_covers: tuple[R410CoverConfig, ...] = ()
+        self._cover_action = "add"
+        self._cover_original: R410CoverConfig | None = None
+        self._cover_draft: dict[str, Any] = {}
+        self._cover_remove_id: str | None = None
 
     def _scan_progress(self, current: int, total: int, found: int) -> None:
         self._progress = {
@@ -518,7 +533,12 @@ class ProfileFlow:
             return self.async_show_menu(
                 step_id="edit_summary",
                 menu_options=["confirm_edit", "cancel_edit"],
-                description_placeholders={"summary": body},
+                description_placeholders={
+                    "summary": body,
+                    "cover_removals": self._cover_removals_for_devices(
+                        {changed.slave} if changed.model != Model.R410 else set()
+                    ),
+                },
             )
         return self.async_show_menu(
             step_id="add_summary",
@@ -676,10 +696,12 @@ class CoseligOptionsFlow(ProfileFlow, config_entries.OptionsFlowWithReload):
             "scan_end": DEFAULT_SCAN_END,
             **copy.deepcopy(dict(self.config_entry.options)),
         }
-        self._existing = {
-            device.slave: device
-            for device in devices_from_options(self.config_entry.options)
-        }
+        try:
+            devices = devices_from_options(self.config_entry.options)
+            self._existing = {device.slave: device for device in devices}
+            self._r410_covers = r410_covers_from_options(self._options, devices)
+        except R410CoverConfigError, KeyError, ValueError, TypeError:
+            return self.async_abort(reason="invalid_stored_options")
         self._s402_ids = list(
             s402_devices_from_options(dict(self.config_entry.options))
         )
@@ -702,9 +724,499 @@ class CoseligOptionsFlow(ProfileFlow, config_entries.OptionsFlowWithReload):
                 "edit_devices",
                 "remove_devices",
                 "s402_management",
+                "r410_cover_management",
                 "back_to_options",
             ],
         )
+
+    def _cover_relay_pool(self, slave: int) -> tuple[int, ...]:
+        reserved = set()
+        for cover in self._r410_covers:
+            if cover.slave == slave and (
+                self._cover_original is None or cover.id != self._cover_original.id
+            ):
+                reserved.update(cover.relays)
+        return tuple(relay for relay in range(1, 5) if relay not in reserved)
+
+    def _cover_candidate_slaves(self) -> tuple[int, ...]:
+        return tuple(
+            slave
+            for slave, device in sorted(self._existing.items())
+            if device.model == Model.R410 and len(self._cover_relay_pool(slave)) >= 2
+        )
+
+    def _cover_allocations_description(self) -> str:
+        lines = []
+        for cover in self._r410_covers:
+            stop = (
+                " + ".join(f"R{relay}" for relay in cover.relays)
+                if cover.mode == R410CoverMode.TWO_RELAY
+                else f"R{cover.stop_relay}"
+            )
+            lines.append(
+                f"R410 #{cover.slave} · {cover.name} · "
+                f"{cover.mode.value} · 開 R{cover.open_relay} · "
+                f"停 {stop} · 關 R{cover.close_relay} · "
+                f"脈衝 {cover.pulse_tenths / 10:.1f} 秒"
+            )
+        for slave, device in sorted(self._existing.items()):
+            if device.model != Model.R410:
+                continue
+            free = self._cover_relay_pool(slave)
+            lines.append(
+                f"R410 #{slave} 一般 Switch："
+                + ("、".join(f"Relay {relay}" for relay in free) if free else "無")
+            )
+        return "\n".join(lines) or "尚未設定 R410。至少需要 2 個未使用 Relay。"
+
+    async def async_step_r410_cover_management(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        options = []
+        if self._cover_candidate_slaves():
+            options.append("add_r410_cover")
+        if self._r410_covers:
+            options.extend(("edit_r410_cover", "remove_r410_cover"))
+        if not options:
+            options.append("back_to_device_management")
+        else:
+            options.append("back_to_device_management")
+        return self.async_show_menu(
+            step_id="r410_cover_management",
+            menu_options=options,
+            description_placeholders={
+                "allocations": self._cover_allocations_description()
+            },
+        )
+
+    async def async_step_add_r410_cover(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        slaves = self._cover_candidate_slaves()
+        if not slaves:
+            return self.async_show_menu(
+                step_id="add_r410_cover",
+                menu_options=["back_to_r410_cover_management"],
+                description_placeholders={"reason": "至少需要 2 個未使用 Relay。"},
+            )
+        options = [{"value": str(slave), "label": f"R410 #{slave}"} for slave in slaves]
+        if user_input is not None:
+            try:
+                slave = int(user_input["slave"])
+            except KeyError, TypeError, ValueError:
+                slave = None
+            if slave not in slaves:
+                return self.async_show_form(
+                    step_id="add_r410_cover",
+                    errors={"slave": "cover_r410_unavailable"},
+                    data_schema=vol.Schema({vol.Required("slave"): select(options)}),
+                )
+            self._cover_action = "add"
+            self._cover_original = None
+            self._cover_draft = {"id": uuid4().hex, "slave": slave}
+            return await self.async_step_cover_name()
+        return self.async_show_form(
+            step_id="add_r410_cover",
+            data_schema=vol.Schema({vol.Required("slave"): select(options)}),
+        )
+
+    async def async_step_edit_r410_cover(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        if not self._r410_covers:
+            return self.async_show_menu(
+                step_id="edit_r410_cover",
+                menu_options=["back_to_r410_cover_management"],
+                description_placeholders={"covers": "尚未設定 Cover。"},
+            )
+        options = [
+            {"value": cover.id, "label": f"R410 #{cover.slave} · {cover.name}"}
+            for cover in self._r410_covers
+        ]
+        if user_input is not None:
+            selected = next(
+                (cover for cover in self._r410_covers if cover.id == user_input["id"]),
+                None,
+            )
+            if selected is None:
+                return self.async_show_form(
+                    step_id="edit_r410_cover",
+                    errors={"id": "cover_not_found"},
+                    data_schema=vol.Schema({vol.Required("id"): select(options)}),
+                )
+            self._cover_action = "edit"
+            self._cover_original = selected
+            self._cover_draft = selected.as_dict()
+            return await self.async_step_cover_name()
+        return self.async_show_form(
+            step_id="edit_r410_cover",
+            data_schema=vol.Schema({vol.Required("id"): select(options)}),
+        )
+
+    async def async_step_cover_name(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        errors = {}
+        if user_input is not None:
+            name = user_input.get("name")
+            if not isinstance(name, str) or not name.strip():
+                errors["name"] = "invalid_cover_name"
+            else:
+                self._cover_draft["name"] = name.strip()
+                return await self.async_step_cover_class()
+        return self.async_show_form(
+            step_id="cover_name",
+            errors=errors,
+            data_schema=vol.Schema(
+                {vol.Required("name", default=self._cover_draft.get("name", "")): str}
+            ),
+        )
+
+    async def async_step_cover_class(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        errors = {}
+        if user_input is not None:
+            device_class = user_input.get("device_class")
+            try:
+                self._cover_draft["device_class"] = (
+                    None
+                    if device_class in (None, "")
+                    else CoverDeviceClass(device_class).value
+                )
+            except TypeError, ValueError:
+                errors["device_class"] = "invalid_cover_device_class"
+            else:
+                return await self.async_step_cover_mode()
+        schema: dict[Any, Any] = {
+            vol.Optional("device_class"): selector.DeviceClassSelector(
+                selector.DeviceClassSelectorConfig(domain=Platform.COVER)
+            )
+        }
+        return self.async_show_form(
+            step_id="cover_class", errors=errors, data_schema=vol.Schema(schema)
+        )
+
+    async def async_step_cover_mode(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        errors = {}
+        if user_input is not None:
+            try:
+                mode = R410CoverMode(user_input["mode"])
+            except KeyError, TypeError, ValueError:
+                errors["mode"] = "invalid_cover_mode"
+            else:
+                self._cover_draft["mode"] = mode.value
+                if (
+                    mode == R410CoverMode.THREE_RELAY
+                    and len(self._cover_relay_pool(self._cover_draft["slave"])) < 3
+                ):
+                    errors["base"] = "insufficient_cover_relays"
+                else:
+                    if mode == R410CoverMode.TWO_RELAY:
+                        self._cover_draft.pop("stop_relay", None)
+                    return await self.async_step_cover_mapping()
+        return self.async_show_form(
+            step_id="cover_mode",
+            errors=errors,
+            data_schema=vol.Schema(
+                {
+                    vol.Required(
+                        "mode",
+                        default=self._cover_draft.get(
+                            "mode", R410CoverMode.TWO_RELAY.value
+                        ),
+                    ): select(
+                        [
+                            {"value": mode.value, "label": mode.value.replace("_", " ")}
+                            for mode in R410CoverMode
+                        ]
+                    )
+                }
+            ),
+        )
+
+    def _cover_mapping_fields(self) -> tuple[str, ...]:
+        if self._cover_draft.get("mode") == R410CoverMode.THREE_RELAY.value:
+            return ("open_relay", "stop_relay", "close_relay")
+        return ("open_relay", "close_relay")
+
+    def _cover_mapping_schema(self) -> vol.Schema:
+        slave = self._cover_draft["slave"]
+        pool = self._cover_relay_pool(slave)
+        fields: dict[Any, Any] = {}
+        already_selected: set[int] = set()
+        for field in self._cover_mapping_fields():
+            current = self._cover_draft.get(field)
+            if current not in pool or current in already_selected:
+                current = next(relay for relay in pool if relay not in already_selected)
+            already_selected.add(current)
+            fields[vol.Required(field, default=str(current))] = select(
+                [{"value": str(relay), "label": f"Relay {relay}"} for relay in pool]
+            )
+        return vol.Schema(fields)
+
+    async def async_step_cover_mapping(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        errors = {}
+        if user_input is not None:
+            try:
+                relays = {
+                    field: int(user_input[field])
+                    for field in self._cover_mapping_fields()
+                }
+            except KeyError, TypeError, ValueError:
+                relays = {}
+            pool = self._cover_relay_pool(self._cover_draft["slave"])
+            if (
+                len(relays) != len(self._cover_mapping_fields())
+                or len(set(relays.values())) != len(relays)
+                or not set(relays.values()).issubset(pool)
+            ):
+                errors["base"] = "invalid_cover_relays"
+            else:
+                self._cover_draft.update(relays)
+                return await self.async_step_cover_pulse()
+        return self.async_show_form(
+            step_id="cover_mapping",
+            errors=errors,
+            data_schema=self._cover_mapping_schema(),
+        )
+
+    async def async_step_cover_pulse(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        errors = {}
+        if user_input is not None:
+            try:
+                pulse = float(user_input["pulse_seconds"])
+            except KeyError, TypeError, ValueError:
+                pulse = 0.0
+            tenths = round(pulse * 10)
+            if not 0.1 <= pulse <= 25.0 or abs(pulse * 10 - tenths) > 1e-7:
+                errors["pulse_seconds"] = "invalid_cover_pulse"
+            else:
+                self._cover_draft["pulse_tenths"] = tenths
+                return await self.async_step_cover_summary()
+        return self.async_show_form(
+            step_id="cover_pulse",
+            errors=errors,
+            data_schema=vol.Schema(
+                {
+                    vol.Required(
+                        "pulse_seconds",
+                        default=self._cover_draft.get("pulse_tenths", 5) / 10,
+                    ): selector.NumberSelector(
+                        selector.NumberSelectorConfig(
+                            min=0.1,
+                            max=25.0,
+                            step=0.1,
+                            mode=selector.NumberSelectorMode.BOX,
+                        )
+                    )
+                }
+            ),
+        )
+
+    def _cover_summary_text(self, cover: R410CoverConfig) -> tuple[str, str]:
+        stop = (
+            " + ".join(f"R{relay}" for relay in (cover.open_relay, cover.close_relay))
+            if cover.mode == R410CoverMode.TWO_RELAY
+            else f"R{cover.stop_relay}"
+        )
+        summary = (
+            f"{cover.name}\nR410 #{cover.slave}\n"
+            f"類別：{cover.device_class.value if cover.device_class else '一般 Cover'}\n"
+            f"模式：{cover.mode.value}\n開啟：R{cover.open_relay}\n"
+            f"停止：{stop}\n關閉：R{cover.close_relay}\n"
+            f"脈衝：{cover.pulse_tenths / 10:.1f} 秒"
+        )
+        previous = self._cover_original
+        change = ""
+        if previous is not None:
+            released = sorted(set(previous.relays) - set(cover.relays))
+            claimed = sorted(set(cover.relays) - set(previous.relays))
+            change = (
+                f"釋出一般 Relay：{', '.join(f'R{x}' for x in released) or '無'}\n"
+                f"新增 Cover Relay：{', '.join(f'R{x}' for x in claimed) or '無'}"
+            )
+        reserved = set(cover.relays)
+        reserved.update(
+            relay
+            for item in self._r410_covers
+            if item.slave == cover.slave
+            and (previous is None or item.id != previous.id)
+            for relay in item.relays
+        )
+        free = [relay for relay in range(1, 5) if relay not in reserved]
+        change = "\n".join(
+            part
+            for part in (
+                change,
+                "確認後的一般 Switch：" + ("、".join(f"R{x}" for x in free) or "無"),
+            )
+            if part
+        )
+        return summary, change
+
+    async def async_step_cover_summary(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        try:
+            cover = parse_r410_cover(self._cover_draft)
+            devices = tuple(self._existing.values())
+            r410_covers_from_options(
+                {
+                    "r410_covers": [
+                        item.as_dict()
+                        for item in self._r410_covers
+                        if self._cover_original is None
+                        or item.id != self._cover_original.id
+                    ]
+                    + [cover.as_dict()]
+                },
+                devices,
+            )
+        except R410CoverConfigError:
+            return self.async_show_form(
+                step_id="cover_mapping",
+                errors={"base": "invalid_cover_relays"},
+                data_schema=self._cover_mapping_schema(),
+            )
+        self._cover_draft = cover.as_dict()
+        summary, resource_change = self._cover_summary_text(cover)
+        return self.async_show_menu(
+            step_id="cover_summary",
+            menu_options=["confirm_cover", "cancel_cover"],
+            description_placeholders={
+                "summary": summary,
+                "resource_change": resource_change,
+            },
+        )
+
+    async def async_step_confirm_cover(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        try:
+            cover = parse_r410_cover(self._cover_draft)
+        except R410CoverConfigError:
+            return await self.async_step_r410_cover_management()
+        updated = self._copy_options()
+        records = copy.deepcopy(updated.get("r410_covers", []))
+        if self._cover_action == "add":
+            if any(parse_r410_cover(raw).id == cover.id for raw in records):
+                return await self.async_step_r410_cover_management()
+            records.append(cover.as_dict())
+        else:
+            found = False
+            replaced = []
+            for raw in records:
+                existing = parse_r410_cover(raw)
+                if existing.id == cover.id:
+                    merged = copy.deepcopy(raw)
+                    merged.update(cover.as_dict())
+                    if cover.mode == R410CoverMode.TWO_RELAY:
+                        merged.pop("stop_relay", None)
+                    replaced.append(merged)
+                    found = True
+                else:
+                    replaced.append(raw)
+            if not found:
+                return await self.async_step_r410_cover_management()
+            records = replaced
+        updated["r410_covers"] = records
+        try:
+            devices = devices_from_options(updated)
+            r410_covers_from_options(updated, devices)
+        except R410CoverConfigError, KeyError, ValueError, TypeError:
+            return self.async_show_form(
+                step_id="cover_mapping",
+                errors={"base": "invalid_cover_relays"},
+                data_schema=self._cover_mapping_schema(),
+            )
+        return self.async_create_entry(data=updated)
+
+    async def async_step_cancel_cover(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        self._cover_draft = {}
+        self._cover_original = None
+        return await self.async_step_r410_cover_management()
+
+    async def async_step_remove_r410_cover(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        if not self._r410_covers:
+            return self.async_show_menu(
+                step_id="remove_r410_cover",
+                menu_options=["back_to_r410_cover_management"],
+                description_placeholders={"covers": "尚未設定 Cover。"},
+            )
+        options = [
+            {"value": cover.id, "label": f"R410 #{cover.slave} · {cover.name}"}
+            for cover in self._r410_covers
+        ]
+        if user_input is not None:
+            selected = next(
+                (cover for cover in self._r410_covers if cover.id == user_input["id"]),
+                None,
+            )
+            if selected is None:
+                return self.async_show_form(
+                    step_id="remove_r410_cover",
+                    errors={"id": "cover_not_found"},
+                    data_schema=vol.Schema({vol.Required("id"): select(options)}),
+                )
+            self._cover_remove_id = selected.id
+            self._cover_original = selected
+            return await self.async_step_remove_cover_summary()
+        return self.async_show_form(
+            step_id="remove_r410_cover",
+            data_schema=vol.Schema({vol.Required("id"): select(options)}),
+        )
+
+    async def async_step_remove_cover_summary(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        cover = self._cover_original
+        if cover is None:
+            return await self.async_step_r410_cover_management()
+        return self.async_show_menu(
+            step_id="remove_cover_summary",
+            menu_options=["confirm_remove_cover", "cancel_remove_cover"],
+            description_placeholders={
+                "name": cover.name,
+                "slave": str(cover.slave),
+                "relays": "、".join(f"R{relay}" for relay in cover.relays),
+            },
+        )
+
+    async def async_step_confirm_remove_cover(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        if self._cover_remove_id is None:
+            return await self.async_step_r410_cover_management()
+        updated = self._copy_options()
+        records = []
+        for raw in updated.get("r410_covers", []):
+            if parse_r410_cover(raw).id != self._cover_remove_id:
+                records.append(copy.deepcopy(raw))
+        updated["r410_covers"] = records
+        return self.async_create_entry(data=updated)
+
+    async def async_step_cancel_remove_cover(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        self._cover_remove_id = None
+        self._cover_original = None
+        return await self.async_step_r410_cover_management()
+
+    async def async_step_back_to_r410_cover_management(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        return await self.async_step_r410_cover_management()
 
     async def async_step_s402_management(
         self, user_input: dict[str, Any] | None = None
@@ -879,7 +1391,10 @@ class CoseligOptionsFlow(ProfileFlow, config_entries.OptionsFlowWithReload):
                     "devices": "\n".join(
                         f"Slave {slave} · {self._existing[slave].model.value.upper()}"
                         for slave in self._remove_selected
-                    )
+                    ),
+                    "covers": self._cover_removals_for_devices(
+                        set(self._remove_selected)
+                    ),
                 },
             )
         return self.async_show_form(
@@ -898,6 +1413,12 @@ class CoseligOptionsFlow(ProfileFlow, config_entries.OptionsFlowWithReload):
             for device in self._existing_raw_devices
             if int(device["slave"]) not in self._remove_selected
         ]
+        if "r410_covers" in updated:
+            updated["r410_covers"] = [
+                copy.deepcopy(cover)
+                for cover in updated["r410_covers"]
+                if int(cover["slave"]) not in self._remove_selected
+            ]
         return self.async_create_entry(data=updated)
 
     async def async_step_remove_summary(
@@ -910,7 +1431,8 @@ class CoseligOptionsFlow(ProfileFlow, config_entries.OptionsFlowWithReload):
                 "devices": "\n".join(
                     f"Slave {slave} · {self._existing[slave].model.value.upper()}"
                     for slave in self._remove_selected
-                )
+                ),
+                "covers": self._cover_removals_for_devices(set(self._remove_selected)),
             },
         )
 
@@ -983,7 +1505,22 @@ class CoseligOptionsFlow(ProfileFlow, config_entries.OptionsFlowWithReload):
             else copy.deepcopy(device)
             for device in self._existing_raw_devices
         ]
+        if replacement.model != Model.R410 and "r410_covers" in updated:
+            updated["r410_covers"] = [
+                copy.deepcopy(cover)
+                for cover in updated["r410_covers"]
+                if int(cover["slave"]) != replacement.slave
+            ]
         return self.async_create_entry(data=updated)
+
+    def _cover_removals_for_devices(self, slaves: set[int]) -> str:
+        names = [
+            f"R410 #{cover.slave} · {cover.name} · "
+            + "、".join(f"R{relay}" for relay in cover.relays)
+            for cover in self._r410_covers
+            if cover.slave in slaves
+        ]
+        return "\n".join(names) or "無"
 
     def _serialize_existing(self, device: Device) -> dict[str, Any]:
         """Update the selected device while retaining its unknown future fields."""

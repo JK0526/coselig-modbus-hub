@@ -9,6 +9,7 @@ from custom_components.coselig_modbus_hub.protocol import (
     ProtocolError,
     frame,
     read_holding_registers,
+    write_single_register,
 )
 from custom_components.coselig_modbus_hub.s402 import S402Event
 from custom_components.coselig_modbus_hub.trace import ProtocolTraceBuffer
@@ -87,6 +88,147 @@ async def test_capacity_coalesces_and_rejects(gateway, transport, caplog):
     gateway.release.set()
     await asyncio.gather(first, *pending, replacement)
     assert transport.statistics.queue_peak == 2
+
+
+@pytest.mark.parametrize(
+    "values",
+    [
+        [0x0501, 0x0501, 0x0501],
+        [0x0501, 0x0503, 0x0501],
+        [0x0501, 0x0502, 0x0503],
+    ],
+)
+async def test_action_controls_are_fifo_and_never_coalesce(gateway, values):
+    transport = Transport("127.0.0.1", gateway.port, timeout=0.04, capacity=4)
+    gateway.block = True
+    try:
+        first = asyncio.create_task(transport.submit(read(1, 4), poll=True))
+        await gateway.arrived.wait()
+        actions = [
+            asyncio.create_task(
+                transport.submit_action(write_single_register(1, 0x019B, value))
+            )
+            for value in values
+        ]
+        for _ in range(100):
+            if transport.queue_depth == len(values):
+                break
+            await asyncio.sleep(0)
+        assert transport.queue_depth == len(values)
+        gateway.release.set()
+        await asyncio.gather(first, *actions)
+        assert [value for _slave, address, value in gateway.register_writes] == values
+    finally:
+        await transport.close()
+
+
+async def test_action_controls_count_toward_capacity(gateway, transport):
+    gateway.block = True
+    first = asyncio.create_task(transport.submit(read(1, 4), poll=True))
+    await gateway.arrived.wait()
+    actions = [
+        asyncio.create_task(
+            transport.submit_action(write_single_register(1, 0x019B, value))
+        )
+        for value in (0x0501, 0x0502)
+    ]
+    await asyncio.sleep(0)
+    assert transport.queue_depth == transport.capacity == 2
+    with pytest.raises(asyncio.QueueFull):
+        await transport.submit_action(write_single_register(1, 0x019B, 0x0503))
+    gateway.release.set()
+    await asyncio.gather(first, *actions)
+
+
+async def test_action_controls_use_default_capacity_32(gateway):
+    transport = Transport("127.0.0.1", gateway.port, timeout=0.04)
+    gateway.block = True
+    try:
+        first = asyncio.create_task(transport.submit(read(1, 4), poll=True))
+        await gateway.arrived.wait()
+        actions = [
+            asyncio.create_task(
+                transport.submit_action(
+                    write_single_register(8, 0x019B, 0x0500 | relay)
+                )
+            )
+            for relay in range(1, 33)
+        ]
+        for _ in range(100):
+            if transport.queue_depth == 32:
+                break
+            await asyncio.sleep(0)
+        assert transport.capacity == transport.queue_depth == 32
+        with pytest.raises(asyncio.QueueFull):
+            await transport.submit_action(write_single_register(8, 0x019B, 0x0501))
+        gateway.release.set()
+        await asyncio.gather(first, *actions)
+        assert [value for _slave, _address, value in gateway.register_writes] == [
+            0x0500 | relay for relay in range(1, 33)
+        ]
+    finally:
+        await transport.close()
+
+
+async def test_action_controls_keep_control_priority_over_pending_polls(
+    gateway, transport
+):
+    gateway.block = True
+    first = asyncio.create_task(transport.submit(read(1, 4), poll=True))
+    await gateway.arrived.wait()
+    polls = [
+        asyncio.create_task(transport.submit(read(slave, 4), poll=True))
+        for slave in (2, 3)
+    ]
+    actions = [
+        asyncio.create_task(
+            transport.submit_action(write_single_register(8, 0x019B, value))
+        )
+        for value in (0x0501, 0x0502)
+    ]
+    await asyncio.sleep(0)
+    gateway.release.set()
+    await asyncio.gather(first, *polls, *actions)
+    assert [(request[0], request[1]) for request in gateway.requests] == [
+        (1, 3),
+        (8, 6),
+        (8, 6),
+        (2, 3),
+        (3, 3),
+    ]
+    assert [value for _slave, _address, value in gateway.register_writes] == [
+        0x0501,
+        0x0502,
+    ]
+
+
+@pytest.mark.parametrize(
+    ("mode", "error", "sent_values"),
+    [
+        ("timeout", TimeoutError, [0x0501]),
+        ("disconnect", GatewayError, []),
+    ],
+)
+async def test_action_failure_discards_unsent_actions_without_replay(
+    gateway, transport, mode, error, sent_values
+):
+    gateway.block = True
+    gateway.modes[1] = mode
+    first = asyncio.create_task(
+        transport.submit_action(write_single_register(1, 0x019B, 0x0501))
+    )
+    await gateway.arrived.wait()
+    pending = asyncio.create_task(
+        transport.submit_action(write_single_register(1, 0x019B, 0x0502))
+    )
+    await asyncio.sleep(0)
+    gateway.release.set()
+    with pytest.raises(error):
+        await first
+    with pytest.raises(OfflineError):
+        await pending
+    assert [value for _slave, _address, value in gateway.register_writes] == sent_values
+    gateway.modes.clear()
 
 
 @pytest.mark.parametrize(

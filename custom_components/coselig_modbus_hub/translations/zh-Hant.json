@@ -24,7 +24,18 @@
   "options": {
     "step": {
       "init": {"title": "Coselig 設定", "menu_options": {"device_management": "設備管理", "communication": "通訊設定"}},
-      "device_management": {"title": "設備管理", "menu_options": {"add_devices": "新增／搜尋 Modbus 設備", "edit_devices": "修改既有 Modbus 設備", "remove_devices": "移除 Modbus 設備", "s402_management": "S402 場景輸入", "back_to_options": "返回設定"}},
+      "device_management": {"title": "設備管理", "menu_options": {"add_devices": "新增／搜尋 Modbus 設備", "edit_devices": "修改既有 Modbus 設備", "remove_devices": "移除 Modbus 設備", "s402_management": "S402 場景輸入", "r410_cover_management": "R410 Cover 輸出", "back_to_options": "返回設定"}},
+      "r410_cover_management": {"title": "R410 Cover 輸出", "description": "{allocations}", "menu_options": {"add_r410_cover": "新增 Cover", "edit_r410_cover": "修改 Cover", "remove_r410_cover": "移除 Cover", "back_to_device_management": "返回設備管理"}},
+      "add_r410_cover": {"title": "新增 R410 Cover", "description": "{reason}", "data": {"slave": "R410 設備"}, "menu_options": {"back_to_r410_cover_management": "返回 R410 Cover 管理"}},
+      "edit_r410_cover": {"title": "修改 R410 Cover", "data": {"id": "Cover"}, "menu_options": {"back_to_r410_cover_management": "返回 R410 Cover 管理"}},
+      "cover_name": {"title": "Cover 名稱", "description": "Cover 只會向外部乾接點控制器送出瞬時命令。", "data": {"name": "名稱"}},
+      "cover_class": {"title": "Cover 裝置類別", "description": "選擇 Home Assistant Cover 裝置類別；留白則使用一般 Cover。", "data": {"device_class": "裝置類別"}},
+      "cover_mode": {"title": "Cover Relay 模式", "description": "Relay 可自由選擇，不需連續或依序排列。", "data": {"mode": "控制模式"}, "options": {"two_relay": "兩路控制：開／關各一路，停止同時觸發兩路", "three_relay": "三路控制：開／停／關各一路"}},
+      "cover_mapping": {"title": "Cover Relay 對應", "description": "僅能選擇未使用的 Relay；修改時也可保留此 Cover 原本使用的 Relay。", "data": {"open_relay": "開啟 Relay", "stop_relay": "停止 Relay", "close_relay": "關閉 Relay"}},
+      "cover_pulse": {"title": "瞬時脈衝時間", "description": "由 R410 硬體計時。整合只送出一筆 FC06，不等待脈衝結束。", "data": {"pulse_seconds": "脈衝（秒）"}},
+      "cover_summary": {"title": "確認 R410 Cover", "description": "{summary}\n\n{resource_change}\n\n只有確認後才會儲存 Relay 配置。", "menu_options": {"confirm_cover": "確認", "cancel_cover": "取消"}},
+      "remove_r410_cover": {"title": "移除 R410 Cover", "description": "確認後，Cover 使用的 Relay 會恢復為一般 Switch。", "data": {"id": "Cover"}, "menu_options": {"back_to_r410_cover_management": "返回 R410 Cover 管理"}},
+      "remove_cover_summary": {"title": "確認移除 Cover", "description": "要從 R410 #{slave} 移除 {name} 嗎？\n\n以下 Relay 將恢復為一般 Switch：{relays}。", "menu_options": {"confirm_remove_cover": "確認移除", "cancel_remove_cover": "取消"}},
       "s402_management": {"title": "S402 場景輸入", "description": "已設定的 S402：\n{devices}", "menu_options": {"add_s402": "新增 S402", "remove_s402": "移除 S402", "back_to_device_management": "返回設備管理"}},
       "add_s402": {"title": "新增 S402 場景輸入", "description": "輸入 S402 本機 ID（0～255）。此 ID 與 Modbus Slave ID 分屬不同位址空間。啟用 S402 4x 模式時不可設定 Slave #1。", "data": {"s402_id": "S402 ID"}},
       "s402_summary": {"title": "確認 S402 輸入", "description": "{summary}\n\n啟用 S402 4x 模式後，Modbus Slave #1 為保留地址。只有確認後才會儲存。", "menu_options": {"confirm_s402": "確認新增", "cancel_s402": "取消"}},
@@ -41,11 +52,12 @@
       "groups": {"title": "Slave {slave}：輸出設定", "description": "請選擇每組輸出對的使用者模式。", "data": {"group_a": "輸出 1＋2", "group_b": "輸出 3＋4"}},
       "add_summary": {"title": "確認新增設備", "description": "{summary}\n\n共新增 {count} 台設備。確認前不會儲存。", "menu_options": {"confirm_add": "確認新增", "cancel_add": "取消"}},
       "edit_devices": {"title": "修改既有設備", "description": "選擇一台已設定的 Slave 進行修改。", "data": {"slave": "設備"}, "menu_options": {"back_to_device_management": "返回設備管理"}},
-      "edit_summary": {"title": "確認設備修改", "description": "{summary}\n\n確認前不會儲存。", "menu_options": {"confirm_edit": "確認修改", "cancel_edit": "取消"}},
+      "edit_summary": {"title": "確認設備修改", "description": "{summary}\n\n{cover_removals}\n\n確認前不會儲存。", "menu_options": {"confirm_edit": "確認修改", "cancel_edit": "取消"}},
       "remove_devices": {"title": "移除設備", "description": "選擇一台或多台既有設備。只有下一頁確認後才會移除。", "data": {"devices": "要移除的設備"}, "menu_options": {"back_to_device_management": "返回設備管理"}},
-      "remove_summary": {"title": "確認移除設備", "description": "即將移除：\n{devices}\n\n相關 Integration Entity、Child Device 與 Parent Device 會在 reload／registry 清理後移除。", "menu_options": {"confirm_remove": "確認移除", "cancel_remove": "取消"}}
+      "remove_summary": {"title": "確認移除設備", "description": "即將移除：\n{devices}\n\n同時移除的 R410 Cover：\n{covers}\n\n相關 Integration Entity、Child Device 與 Parent Device 會在 reload／registry 清理後移除。", "menu_options": {"confirm_remove": "確認移除", "cancel_remove": "取消"}}
     },
-    "error": {"invalid_range": "起始 Slave 不可大於結束 Slave。", "invalid_poll_interval": "輪詢週期必須是 0 或至少 0.5 秒。", "no_devices": "請至少選擇一台新設備。", "no_devices_to_remove": "請至少選擇一台要移除的設備。", "invalid_s402_id": "S402 ID 必須介於 0～255。", "duplicate_s402_id": "此 S402 ID 已設定。", "reserved_slave_one": "S402 4x 模式會保留 Modbus Slave #1；新增 S402 前請先移除或變更 Slave #1，新增 Slave #1 前請先移除 S402。", "no_s402_to_remove": "請至少選擇一台要移除的 S402。"},
-    "progress": {"scan": "正在掃描 {current}/{total}；找到 {found} 個設備。"}
+    "error": {"invalid_range": "起始 Slave 不可大於結束 Slave。", "invalid_poll_interval": "輪詢週期必須是 0 或至少 0.5 秒。", "no_devices": "請至少選擇一台新設備。", "no_devices_to_remove": "請至少選擇一台要移除的設備。", "invalid_s402_id": "S402 ID 必須介於 0～255。", "duplicate_s402_id": "此 S402 ID 已設定。", "reserved_slave_one": "S402 4x 模式會保留 Modbus Slave #1；新增 S402 前請先移除或變更 Slave #1，新增 Slave #1 前請先移除 S402。", "no_s402_to_remove": "請至少選擇一台要移除的 S402。", "cover_r410_unavailable": "請選擇至少有 2 個未配置 Relay 的 R410。", "invalid_cover_name": "請輸入非空白的 Cover 名稱。", "invalid_cover_device_class": "請選擇有效的 Home Assistant Cover 裝置類別，或留白。", "invalid_cover_mode": "請選擇有效的兩路或三路模式。", "insufficient_cover_relays": "至少需要 2 個未使用 Relay；三路模式需要 3 個。", "invalid_cover_relays": "請為此 Cover 選擇互不重複且未被占用的 Relay。", "invalid_cover_pulse": "脈衝需為 0.1～25.0 秒，並以 0.1 秒遞增。", "cover_not_found": "找不到此 Cover。請返回 Cover 管理後重試。"},
+    "progress": {"scan": "正在掃描 {current}/{total}；找到 {found} 個設備。"},
+    "abort": {"invalid_stored_options": "已儲存的設備或 R410 Cover 設定無效，請先修正設定。"}
   }
 }

@@ -1,4 +1,4 @@
-"""A single RTU stream with bounded, latest-wins control scheduling."""
+"""A single RTU stream with bounded stateful and action control scheduling."""
 
 from __future__ import annotations
 
@@ -49,6 +49,13 @@ class Pending:
     source: str
 
 
+@dataclass(frozen=True)
+class ActionSlot:
+    """Transport-owned FIFO identity for one non-coalescing action."""
+
+    sequence: int
+
+
 S402Callback = Callable[[S402Event], None]
 ConnectionLostCallback = Callable[[], None]
 
@@ -78,7 +85,8 @@ class Transport:
         self.trace = trace
         self.on_s402_event = on_s402_event
         self.on_connection_lost = on_connection_lost
-        self._controls: OrderedDict[CommandKey, Pending] = OrderedDict()
+        self._controls: OrderedDict[CommandKey | ActionSlot, Pending] = OrderedDict()
+        self._next_action_sequence = 0
         self._polls: deque[Pending] = deque()
         self._reader: asyncio.StreamReader | None = None
         self._writer: asyncio.StreamWriter | None = None
@@ -235,8 +243,20 @@ class Transport:
                 future = self._enqueue(request, poll, key, source)
         return await future
 
+    async def submit_action(self, request: bytes) -> bytes | None:
+        """Submit a FIFO action that is never coalesced with another command."""
+        async with self._gate:
+            future = self._enqueue(request, False, None, "control", action=True)
+        return await future
+
     def _enqueue(
-        self, request: bytes, poll: bool, key: CommandKey | None, source: str
+        self,
+        request: bytes,
+        poll: bool,
+        key: CommandKey | None,
+        source: str,
+        *,
+        action: bool = False,
     ) -> asyncio.Future[bytes | None]:
         if self._closed:
             raise OfflineError("Transport closed")
@@ -244,6 +264,12 @@ class Transport:
         item = Pending(request, future, source)
         if poll:
             self._polls.append(item)
+        elif action:
+            if len(self._controls) >= self.capacity:
+                _LOGGER.warning("Control queue full; new action rejected")
+                raise asyncio.QueueFull
+            self._next_action_sequence += 1
+            self._controls[ActionSlot(self._next_action_sequence)] = item
         else:
             key = key or (request[0], request[2:4].hex(), "write")
             if key in self._controls:

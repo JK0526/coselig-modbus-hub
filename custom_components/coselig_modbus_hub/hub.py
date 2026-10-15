@@ -9,6 +9,7 @@ from homeassistant.core import HomeAssistant
 
 from .coordinator import Coordinator
 from .models import Device
+from .r410_cover import R410CoverConfig
 from .s402 import S402Event
 from .scanner import ScanResult, scan
 from .trace import ProtocolTraceBuffer
@@ -20,6 +21,7 @@ class Hub:
     transport: Transport
     coordinator: Coordinator
     s402_ids: tuple[int, ...] = ()
+    r410_covers: tuple[R410CoverConfig, ...] = ()
     _s402_listeners: dict[tuple[int, int], set[Callable[[S402Event], None]]] = field(
         default_factory=dict, init=False, repr=False
     )
@@ -37,12 +39,14 @@ class Hub:
         devices: tuple[Device, ...],
         interval: float,
         s402_ids: tuple[int, ...] = (),
+        r410_covers: tuple[R410CoverConfig, ...] = (),
     ) -> Hub:
         transport = Transport(host, port, trace=ProtocolTraceBuffer())
         return cls(
             transport,
             Coordinator(hass, transport, devices, interval),
             s402_ids,
+            r410_covers,
         )
 
     def subscribe_s402(
