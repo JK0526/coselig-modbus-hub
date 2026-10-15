@@ -7,6 +7,7 @@ import pytest
 from homeassistant.data_entry_flow import FlowResultType
 
 from custom_components.coselig_modbus_hub.config_flow import (
+    MODEL_LABELS,
     ConfigFlow,
     CoseligOptionsFlow,
     valid_host,
@@ -18,6 +19,14 @@ from custom_components.coselig_modbus_hub.models import Device, GroupMode, Model
 from custom_components.coselig_modbus_hub.profiles import DeviceFamily
 from custom_components.coselig_modbus_hub.scanner import ScanResult
 from custom_components.coselig_modbus_hub.transport import GatewayError
+
+
+def test_model_labels_use_coselig_names_without_legacy_aliases():
+    assert MODEL_LABELS == {
+        Model.P404: "P404 — 4 路 PWM 調光器",
+        Model.P210: "P210 — 2 路 PWM 調光器",
+        Model.R410: "R410 — 4 路 Relay",
+    }
 
 
 @pytest.fixture
@@ -141,8 +150,8 @@ async def test_initial_add_flow_has_summary_before_create_and_p404_default(flow)
         assert [device.model for device in flow._working_devices] == [Model.R410]
         assert result["data_schema"]({})["model"] == "p404"
         labels = [item["label"] for item in _choices(result, "model")]
-        assert "P404 — 4 路 PWM 調光器（SUNWAVE L10）" in labels
-        assert "P210 — 2 路 PWM 調光器（SUNWAVE L2）" in labels
+        assert "P404 — 4 路 PWM 調光器" in labels
+        assert "P210 — 2 路 PWM 調光器" in labels
         assert (
             "P404／P210 無法由協議可靠自動區分"
             in result["description_placeholders"]["model_reason"]

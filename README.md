@@ -1,4 +1,4 @@
-# Coselig Modbus Hub v1.3.1
+# Coselig Modbus Hub v1.3.2
 
 將 Coselig **P404／P210 PWM Dimmer 與 R410 Relay** 透過 TCP／RS485 Gateway 加入 Home Assistant，直接建立 Native LightEntity／SwitchEntity。設備與連線設定全走 HA 原生介面；不需要 MQTT、Node-RED 或 YAML。新增的唯讀 Modbus Monitor 只顯示通訊封包，不提供設備管理或寫入工具。
 
@@ -7,7 +7,7 @@ P404 / P210 / R410 → RS485 → TCP Gateway → RTU Transport → Profile + Coo
                                              └→ Memory Trace        └→ Light / Switch
 ```
 
-套件 **1.3.1**，domain `coselig_modbus_hub`，Config Entry schema `2.1`。最低 HA Core **2026.10.0**；本機測試使用 **2026.10.1／Python 3.14.7**。
+套件 **1.3.2**，domain `coselig_modbus_hub`，Config Entry schema `2.1`。最低 HA Core **2026.10.0**；本機測試使用 **2026.10.1／Python 3.14.7**。
 
 ## 安裝與第一次設定
 
@@ -25,9 +25,9 @@ P404 / P210 / R410 → RS485 → TCP Gateway → RTU Transport → Profile + Coo
 
 | 型號／產品 | 功能 | HA Platform | 輸出模式 |
 | --- | --- | --- | --- |
-| P404／SUNWAVE L10 | 4CH PWM Dimmer | Light | Single / CCT |
-| P210／SUNWAVE L2 | 2CH PWM Dimmer | Light | Single / CCT |
-| R410／SUNWAVE R4J、R4P | 4CH Relay | Switch | Relay only |
+| Coselig P404 | 4CH PWM Dimmer | Light | Single / CCT |
+| Coselig P210 | 2CH PWM Dimmer | Light | Single / CCT |
+| Coselig R410 | 4CH Relay | Switch | Relay only |
 
 **R410 DI inputs currently not exposed.** 本版不提供 DI entities、DI 設定、Scene、Momentary、Relay linkage、FC0F 或硬體 subtype 選擇。
 
@@ -49,20 +49,20 @@ Group A 使用 CH1＋CH2，Group B 使用 CH3＋CH4。CCT 沿用第一個 regist
 
 ## Modbus Monitor
 
-管理員登入後，左側 **Coselig Modbus Monitor** 開啟診斷儀表板。桌面版以 CSS Grid 分成左側 Raw Trace 與右側 Sidebar；窄畫面改成單欄。Gateway selector、Slave／類型篩選、清除、暫停畫面與自動捲動都在工具列。
+管理員登入後，左側 **Coselig Modbus Monitor** 開啟診斷儀表板。桌面版以 viewport 高度工作區分成左側原始封包與右側診斷 Sidebar，兩欄各自捲動；窄畫面改成單欄。閘道器選擇、Slave／類型篩選、清除、暫停畫面與自動捲動都在工具列。
 
-Sidebar 顯示：
+Sidebar 依序顯示閘道器、封包解析、設備狀態及通訊統計。設備狀態清單固定高度並可獨立捲動；封包解析靠近 Sidebar 上方。內容包含：
 
 - Gateway connected、Polling、可用／設定 Slave 數、最近與平均輪詢耗時、Queue 深度與峰值。
-- 本次執行期間的 Successful／Failed／Timeout／CRC Error／Reconnect 統計。
-- 每個 configured Slave 的型號、Online／Offline 與連續失敗數；點選 Slave 只改前端 Trace filter。
-- 點選任一 Trace row 可查看 transaction 的 Request／Response、Slave、Function、用途、輸出語意、Latency 與結果。
+- 本次執行期間的成功／失敗／逾時／CRC 錯誤／重新連線統計。
+- 每個 configured Slave 的型號、在線／離線與連續失敗數；點選 Slave 只改前端封包篩選，再點一次可恢復全部。
+- 點選任一封包列可查看 transaction 的 Request／Response、Slave、Function、用途、輸出語意、Latency 與結果。
 
 TX 藍色、RX／OK 綠色、TIMEOUT 橘色、CRC ERROR／ERROR 紅色；沿用 v1.1.2 固定狀態色，timestamp、latency 使用 HA 次要文字色，Raw HEX 沿用 TX／RX 色系。
 
-Slave 與 TX／RX／OK／Error filters 都只在前端執行；Slave filter 會保留所屬 transaction 的 RX 與 OK／ERROR status。Pause 只凍結畫面，解除時顯示最新快照；Auto-scroll 獨立控制是否跳到最新列。
+Slave 與 TX／RX／OK／Error filters 都只在前端執行；Slave filter 會保留所屬 transaction 的 RX 與 OK／ERROR status。暫停只凍結畫面，資料仍會收入瀏覽器暫存，解除時顯示累積封包。自動捲動關閉時，畫面以封包穩定 key 與 viewport offset 保持正在閱讀的列；重新開啟會移至最新列。
 
-Monitor backend 只讀 Coordinator、Transport runtime counters、configured device metadata 與現有 TraceBuffer；約每 0.5 秒比較快照且只送出變更內容，**零額外 Modbus request**。Trace 最多保留 **200 筆記憶體紀錄**；HA 重啟／integration reload 後清空。不讀 Recorder、不寫資料庫或檔案，不把 packet history 放進 Diagnostics。
+Monitor backend 只讀 Coordinator、Transport runtime counters、configured device metadata 與現有 TraceBuffer；約每 0.5 秒比較快照且只送出變更內容，**零額外 Modbus request**。Backend TraceBuffer 固定最多保留 **200 筆記憶體紀錄**；開啟頁面後，瀏覽器另外暫存最多 **1000 筆**供捲動與暫停檢視。此瀏覽器歷史只存在目前頁面的記憶體，切換閘道器、清除或重新載入後即消失。不讀 Recorder、不寫資料庫或檔案，不把 packet history 放進 Diagnostics。
 
 只提供 **清除、暫停畫面、繼續畫面**。暫停畫面不停止 TraceBuffer、Modbus、輪詢或控制。清除只清記憶體 trace。離開頁面取消訂閱。
 
@@ -152,6 +152,8 @@ Round time 從取得輪詢 lock、開始第一個 configured Slave 到本輪最�
 
 **v1.3.0 → v1.3.1**：Entry schema 維持 2.1，無需重建 Hub。設備管理改為新增、修改、移除三個明確流程；新增只接受 New Slave，修改一次一台，移除與所有變更都需要摘要確認。Monitor 增加 runtime diagnostics 與 Packet Decoder；只讀既有記憶體資料，不新增 Modbus request 或寫入功能。
 
+**v1.3.1 → v1.3.2**：Entry schema 維持 2.1，無需重建 Hub。Monitor 改用最多 1000 筆的瀏覽器暫存歷史、穩定封包錨點與選取 key，並提供左右欄獨立捲動及繁體中文介面。Protocol、輪詢及 Queue 行為不變，沒有額外 Modbus request。型號與文件採 Coselig 品牌命名。
+
 **v0.2.x → v1.x** 仍是 Clean Break：先備份 HA，移除舊 Entry，更新、重啟並重新新增。舊 MQTT retained Discovery／實體／自動化需自行檢查清理；新版不連 broker。正式切換前停用寫入相同設備的舊流程。
 
 - 使用帶 CRC 的 RTU over TCP，不是 MBAP Modbus TCP。
@@ -173,4 +175,4 @@ node --test tests/frontend/monitor.test.cjs
 
 Python 測試直接使用正式 custom component、HA APIs 與 loopback Gateway；前端以 Node 內建 runner 獨立測試，不計入 Python coverage。Config Flow 行／分支要求100%，整體 coverage≥99%。
 
-詳見 [v1.3.1 發布說明](docs/v1.3.1-release-notes.md)、[v1.3.0 發布說明](docs/v1.3.0-release-notes.md)、[v1.3.0 架構](docs/v1.3.0-architecture.md)、[v1.2.1 發布說明](docs/v1.2.1-release-notes.md)、[v1.2.0 發布說明](docs/v1.2.0-release-notes.md)、[v1.1.2 發布說明](docs/v1.1.2-release-notes.md)、[v1.1.1 發布說明](docs/v1.1.1-release-notes.md)、[v1.1 實作與發布報告](docs/v1.1-implementation-report.md)、[開發架構](docs/development.md)、[實機驗收清單](docs/v1.0-acceptance.md)。**尚未完成 24～48 小時實機 soak test，測試通過不代表現場全部功能已驗收。**
+詳見 [v1.3.2 發布說明](docs/v1.3.2-release-notes.md)、[v1.3.1 發布說明](docs/v1.3.1-release-notes.md)、[v1.3.0 發布說明](docs/v1.3.0-release-notes.md)、[v1.3.0 架構](docs/v1.3.0-architecture.md)、[v1.2.1 發布說明](docs/v1.2.1-release-notes.md)、[v1.2.0 發布說明](docs/v1.2.0-release-notes.md)、[v1.1.2 發布說明](docs/v1.1.2-release-notes.md)、[v1.1.1 發布說明](docs/v1.1.1-release-notes.md)、[v1.1 實作與發布報告](docs/v1.1-implementation-report.md)、[開發架構](docs/development.md)、[實機驗收清單](docs/v1.0-acceptance.md)。**尚未完成 24～48 小時實機 soak test，測試通過不代表現場全部功能已驗收。**

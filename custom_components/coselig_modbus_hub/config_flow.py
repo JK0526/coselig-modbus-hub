@@ -27,9 +27,9 @@ from .scanner import ScanResult, scan
 from .transport import GatewayError, Transport
 
 MODEL_LABELS = {
-    Model.P404: "P404 — 4 路 PWM 調光器（SUNWAVE L10）",
-    Model.P210: "P210 — 2 路 PWM 調光器（SUNWAVE L2）",
-    Model.R410: "R410 — 4 路 Relay（SUNWAVE R4J／R4P）",
+    Model.P404: "P404 — 4 路 PWM 調光器",
+    Model.P210: "P210 — 2 路 PWM 調光器",
+    Model.R410: "R410 — 4 路 Relay",
 }
 GROUP_LABELS = {
     GroupMode.SINGLE: "兩路獨立調光",

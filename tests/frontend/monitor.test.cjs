@@ -13,23 +13,34 @@ class Element {
     this.value = '';
     this.checked = tag === 'input';
     this.children = [];
+    this.dataset = {};
     this.className = '';
     this.scrollTop = 0;
+    this.clientHeight = 60;
+    this.parentNode = null;
     this.disabled = false;
   }
   get textContent() { return this._text + this.children.map((child) => child.textContent).join(''); }
   set textContent(value) { this._text = String(value); this.children = []; }
   get scrollHeight() { return this.children.length * 10; }
-  replaceChildren(...children) { this._text = ''; this.children = children; }
-  append(...children) { this.children.push(...children); }
+  replaceChildren(...children) { this._text = ''; this.children = children; for (const child of children) child.parentNode = this; }
+  append(...children) { this.children.push(...children); for (const child of children) child.parentNode = this; }
+  getBoundingClientRect() {
+    if (this.parentNode) {
+      const index = this.parentNode.children.indexOf(this);
+      const top = this.parentNode.getBoundingClientRect().top + index * 10 - this.parentNode.scrollTop;
+      return { top, bottom: top + 10 };
+    }
+    return { top: 0, bottom: this.clientHeight };
+  }
 }
 
 const selectors = [
   '#gateway', '#slave-filter', '#type-filter', '#clear', '#pause', '#auto-scroll',
-  '#status', '#error', '#trace', '#gateway-status', '#gateway-poll', '#gateway-devices',
+  '#error', '#trace', '#gateway-status', '#gateway-poll', '#gateway-devices',
   '#gateway-last', '#gateway-average', '#gateway-queue', '#gateway-queue-peak',
   '#stat-success', '#stat-failed', '#stat-timeout', '#stat-crc', '#stat-reconnect',
-  '#devices', '#decoder',
+  '#devices', '#device-summary', '#decoder',
 ];
 class Shadow {
   constructor() { this.nodes = Object.fromEntries(selectors.map((id) => [id, new Element(id === '#auto-scroll' ? 'input' : 'div')])); }
@@ -98,6 +109,8 @@ test('raw trace renders safely; pause freezes presentation but subscription cont
   assert.match(trace.textContent, /80 80/);
   await h.panel.shadowRoot.querySelector('#clear').onclick();
   assert.equal(trace.children.some((row) => row.className.startsWith('trace-entry')), false);
+  assert.equal(h.panel._history.length, 0);
+  assert.equal(h.panel._transactions.length, 0);
   assert.ok(h.calls.every((call) => ['coselig_modbus_hub/monitor/list', 'coselig_modbus_hub/monitor/clear'].includes(call.type)));
   h.panel.disconnectedCallback(); await h.flush(); assert.equal(h.subscriptions[0].closed, true);
 });
@@ -130,9 +143,9 @@ test('TX, RX, OK and every error status receive presentation classes', async () 
 test('diagnostic cards render gateway runtime metrics, counters and slave health', async () => {
   const h = createHarness(); await h.flush(); h.subscriptions[0].callback(snapshot());
   const node = (id) => h.panel.shadowRoot.querySelector(id).textContent;
-  assert.equal(node('#gateway-status'), '● Connected');
-  assert.equal(node('#gateway-poll'), '2.0 s');
-  assert.equal(node('#gateway-devices'), '1 / 2 available');
+  assert.equal(node('#gateway-status'), '● 已連線');
+  assert.equal(node('#gateway-poll'), '2.0 秒');
+  assert.equal(node('#gateway-devices'), '1 / 2 在線');
   assert.equal(node('#gateway-last'), '218.4 ms');
   assert.equal(node('#gateway-average'), '230.9 ms');
   assert.equal(node('#gateway-queue'), '0');
@@ -140,17 +153,17 @@ test('diagnostic cards render gateway runtime metrics, counters and slave health
   assert.equal(node('#stat-success'), '1584'); assert.equal(node('#stat-failed'), '4');
   assert.equal(node('#stat-timeout'), '3'); assert.equal(node('#stat-crc'), '1'); assert.equal(node('#stat-reconnect'), '2');
   const rows = h.panel.shadowRoot.querySelector('#devices').children;
-  assert.match(rows[0].textContent, /#63 R410.*Online/);
-  assert.match(rows[1].textContent, /#70 P404.*Offline.*Failures: 2/);
+  assert.match(rows[0].textContent, /#63 R410.*在線/);
+  assert.match(rows[1].textContent, /#70 P404.*離線.*失敗 2 次/);
   assert.match(monitorSource, /本次執行期間/);
   h.panel.disconnectedCallback();
 });
 
 test('Gateway card independently shows connected polling state, health and queue values', async () => {
   const h = createHarness(); await h.flush(); h.subscriptions[0].callback(snapshot());
-  assert.equal(h.panel.shadowRoot.querySelector('#gateway-status').textContent, '● Connected');
-  assert.equal(h.panel.shadowRoot.querySelector('#gateway-poll').textContent, '2.0 s');
-  assert.equal(h.panel.shadowRoot.querySelector('#gateway-devices').textContent, '1 / 2 available');
+  assert.equal(h.panel.shadowRoot.querySelector('#gateway-status').textContent, '● 已連線');
+  assert.equal(h.panel.shadowRoot.querySelector('#gateway-poll').textContent, '2.0 秒');
+  assert.equal(h.panel.shadowRoot.querySelector('#gateway-devices').textContent, '1 / 2 在線');
   assert.equal(h.panel.shadowRoot.querySelector('#gateway-queue-peak').textContent, '24');
   h.panel.disconnectedCallback();
 });
@@ -170,8 +183,8 @@ test('communication counters are separate runtime values', async () => {
 test('Device Health lists each configured Slave once with failure state', async () => {
   const h = createHarness(); await h.flush(); h.subscriptions[0].callback(snapshot());
   const text = h.panel.shadowRoot.querySelector('#devices').textContent;
-  assert.match(text, /#63 R410.*Online/);
-  assert.match(text, /#70 P404.*Offline.*Failures: 2/);
+  assert.match(text, /#63 R410.*在線/);
+  assert.match(text, /#70 P404.*離線.*失敗 2 次/);
   assert.equal(h.panel.shadowRoot.querySelector('#devices').children.length, 2);
   h.panel.disconnectedCallback();
 });
@@ -218,6 +231,8 @@ test('clicking a Device Health row applies only a frontend Slave filter', async 
   const h = createHarness(); await h.flush(); h.subscriptions[0].callback(snapshot());
   const row = h.panel.shadowRoot.querySelector('#devices').children[0]; row.onclick();
   assert.equal(h.panel.shadowRoot.querySelector('#slave-filter').value, '63');
+  row.onclick();
+  assert.equal(h.panel.shadowRoot.querySelector('#slave-filter').value, 'all');
   assert.equal(h.calls.filter((call) => call.type.endsWith('/clear')).length, 0);
   h.panel.disconnectedCallback();
 });
@@ -227,8 +242,10 @@ test('auto-scroll can turn off without pausing new trace rendering', async () =>
   const trace = h.panel.shadowRoot.querySelector('#trace');
   h.subscriptions[0].callback(snapshot([entry('TX', '3F 03 00 00 00 01')]));
   assert.equal(trace.scrollTop, trace.scrollHeight);
-  const auto = h.panel.shadowRoot.querySelector('#auto-scroll'); auto.checked = false; auto.onchange({ target: auto });
+  const auto = h.panel.shadowRoot.querySelector('#auto-scroll');
   trace.scrollTop = 0;
+  auto.checked = false; auto.onchange({ target: auto });
+  assert.equal(trace.scrollTop, 0);
   h.subscriptions[0].callback(snapshot([entry('TX', '3F 03 00 00 00 01'), entry('RX', '3F 03 02 00 64')]));
   assert.equal(trace.children.length, 2);
   assert.equal(trace.scrollTop, 0);
@@ -330,19 +347,161 @@ test('packet row selection decodes transaction and Clear clears selection only',
   h.panel.disconnectedCallback();
 });
 
-test('responsive layout uses a single-column breakpoint below desktop width', () => {
-  assert.match(monitorSource, /grid-template-columns:minmax\(0,1fr\) minmax\(300px,360px\)/);
-  assert.match(monitorSource, /@media\(max-width:900px\)\{\.layout\{grid-template-columns:minmax\(0,1fr\);grid-template-areas:"sidebar" "trace"\}/);
+test('responsive viewport workspace gives the trace and sidebar independent scrolling', () => {
+  assert.match(monitorSource, /:host\{display:flex;flex-direction:column;height:100vh;height:100dvh;overflow:hidden/);
+  assert.match(monitorSource, /\.layout\{display:grid;grid-template-columns:minmax\(0,1fr\) minmax\(320px,380px\);grid-template-areas:"trace sidebar";gap:14px;flex:1;min-height:0;overflow:hidden\}/);
+  assert.match(monitorSource, /\.trace-panel\{grid-area:trace;display:flex;flex-direction:column;min-height:0\}/);
+  assert.match(monitorSource, /\.trace-list\{flex:1;min-height:0;overflow:auto;min-width:0\}/);
+  assert.match(monitorSource, /\.sidebar\{[^}]*height:100%;min-height:0;overflow-y:auto/);
+  assert.match(monitorSource, /\.device-list\{display:grid;gap:4px;max-height:240px;overflow-y:auto\}/);
+  assert.match(monitorSource, /\.decoder-card\{position:sticky;top:0;z-index:1\}/);
+  assert.match(monitorSource, /\.decoder-grid\{[^}]*max-height:43vh;overflow-y:auto/);
+  assert.match(monitorSource, /@media\(max-width:900px\)\{\:host\{height:auto;min-height:100vh;min-height:100dvh;overflow:visible\}/);
   assert.match(monitorSource, /\.trace-raw\{display:block;min-width:0;overflow-x:auto;white-space:pre\}/);
 });
 
+test('diagnostic cards and Monitor title use Traditional Chinese', () => {
+  assert.match(monitorSource, /<h1>Coselig Modbus 診斷監控<\/h1>/);
+  for (const title of ['原始封包', '閘道器', '封包解析', '設備狀態', '通訊統計']) {
+    assert.ok(monitorSource.includes(`<h2>${title}</h2>`) || monitorSource.includes(`<h2>${title} <small`));
+  }
+  assert.doesNotMatch(monitorSource, /<h2>(Gateway|Packet Decoder|Device Health|Communication Statistics)<\/h2>/);
+  assert.doesNotMatch(monitorSource, /<span id="status"/);
+  const cardOrder = ['閘道器', '封包解析', '設備狀態', '通訊統計'].map((title) => monitorSource.indexOf(`<h2>${title}`));
+  assert.deepEqual(cardOrder, [...cardOrder].sort((left, right) => left - right));
+});
+
+test('entry keys dedupe snapshots and bounded local history keeps timestamp order', () => {
+  const C = createHarness().Constructor;
+  const a = { ...entry('TX', '3F 03', 2), timestamp: '2026-10-14T00:00:01.000Z' };
+  const b = { ...entry('RX', '3F 03', 3), timestamp: '2026-10-14T00:00:02.000Z' };
+  const c = { ...entry('OK', '', 4), timestamp: '2026-10-14T00:00:03.000Z' };
+  assert.equal(C.entryKey(a), C.entryKey({ ...a }));
+  assert.notEqual(C.entryKey(a), C.entryKey(b));
+  assert.equal(JSON.stringify(C.mergeTraceHistory([a, b], [a, b, c], 10).map((item) => item.timestamp)), JSON.stringify([a.timestamp, b.timestamp, c.timestamp]));
+  assert.equal(C.mergeTraceHistory([a, b], [a, b, c], 10).length, 3);
+  const many = Array.from({ length: 1005 }, (_, index) => ({
+    ...entry('TX', '3F 03'),
+    timestamp: new Date(Date.UTC(2026, 0, 1) + index * 1000).toISOString(),
+  }));
+  const bounded = C.mergeTraceHistory([], many, 1000);
+  assert.equal(bounded.length, 1000);
+  assert.equal(bounded[0].timestamp, many[5].timestamp);
+  assert.equal(bounded.at(-1).timestamp, many.at(-1).timestamp);
+});
+
+function numberedEntries(first, last) {
+  return Array.from({ length: last - first + 1 }, (_, offset) => ({
+    ...entry('TX', '3F 03 00 00 00 01'),
+    timestamp: new Date(Date.UTC(2026, 0, 1) + (first + offset) * 1000).toISOString(),
+  }));
+}
+
+test('snapshot rollover keeps frontend local history after backend entries disappear', async () => {
+  const h = createHarness(); await h.flush();
+  h.subscriptions[0].callback(snapshot(numberedEntries(0, 199)));
+  const oldKey = h.panel._history[0] && h.Constructor.entryKey(h.panel._history[0]);
+  assert.equal(h.panel._history.length, 200);
+  h.subscriptions[0].callback(snapshot(numberedEntries(1, 200)));
+  assert.equal(h.panel._history.length, 201);
+  assert.equal(h.Constructor.entryKey(h.panel._history[0]), oldKey);
+  assert.equal(h.panel._history.at(-1).timestamp, numberedEntries(200, 200)[0].timestamp);
+  h.panel.disconnectedCallback();
+});
+
+test('Auto-scroll OFF preserves the same entry anchor and offset across a backend ring rollover', async () => {
+  const h = createHarness(); await h.flush();
+  const trace = h.panel.shadowRoot.querySelector('#trace');
+  h.subscriptions[0].callback(snapshot(numberedEntries(0, 199)));
+  const auto = h.panel.shadowRoot.querySelector('#auto-scroll');
+  auto.checked = false; auto.onchange({ target: auto });
+  trace.scrollTop = 500;
+  const anchorRow = trace.children[50];
+  const anchorKey = anchorRow.dataset.entryKey;
+  const anchorOffset = anchorRow.getBoundingClientRect().top - trace.getBoundingClientRect().top;
+  h.subscriptions[0].callback(snapshot(numberedEntries(1, 200)));
+  const anchored = trace.children.find((row) => row.dataset.entryKey === anchorKey);
+  assert.ok(anchored);
+  assert.equal(anchored.getBoundingClientRect().top - trace.getBoundingClientRect().top, anchorOffset);
+  assert.equal(h.panel._history.length, 201);
+  h.panel.disconnectedCallback();
+});
+
+test('missing anchor falls back to oldest surviving row instead of jumping to bottom', async () => {
+  const h = createHarness(); await h.flush();
+  const trace = h.panel.shadowRoot.querySelector('#trace');
+  h.subscriptions[0].callback(snapshot(numberedEntries(0, 999)));
+  const auto = h.panel.shadowRoot.querySelector('#auto-scroll');
+  auto.checked = false; auto.onchange({ target: auto });
+  trace.scrollTop = 5000;
+  const staleAnchor = trace.children[500].dataset.entryKey;
+  for (const [first, last] of [[1000, 1199], [1200, 1399], [1400, 1599]]) {
+    h.subscriptions[0].callback(snapshot(numberedEntries(first, last)));
+  }
+  assert.equal(h.panel._history.length, 1000);
+  assert.ok(!trace.children.some((row) => row.dataset.entryKey === staleAnchor));
+  assert.equal(trace.scrollTop, 0);
+  assert.ok(trace.scrollTop < trace.scrollHeight - trace.clientHeight);
+  h.panel.disconnectedCallback();
+});
+
+test('re-enabling Auto-scroll immediately moves to the latest row', async () => {
+  const h = createHarness(); await h.flush();
+  const trace = h.panel.shadowRoot.querySelector('#trace');
+  h.subscriptions[0].callback(snapshot(numberedEntries(0, 19)));
+  const auto = h.panel.shadowRoot.querySelector('#auto-scroll');
+  auto.checked = false; auto.onchange({ target: auto });
+  trace.scrollTop = 10;
+  auto.checked = true; auto.onchange({ target: auto });
+  assert.equal(trace.scrollTop, trace.scrollHeight);
+  h.panel.disconnectedCallback();
+});
+
+test('Pause continues ingesting history without rendering until resumed', async () => {
+  const h = createHarness(); await h.flush();
+  const trace = h.panel.shadowRoot.querySelector('#trace');
+  const first = numberedEntries(0, 1);
+  h.subscriptions[0].callback(snapshot(first));
+  const oldDom = trace.textContent;
+  h.panel.shadowRoot.querySelector('#pause').onclick();
+  h.subscriptions[0].callback(snapshot(numberedEntries(0, 3)));
+  assert.equal(h.panel._history.length, 4);
+  assert.equal(trace.textContent, oldDom);
+  h.panel.shadowRoot.querySelector('#pause').onclick();
+  assert.equal(trace.children.filter((row) => row.className.includes('trace-entry')).length, 4);
+  h.panel.disconnectedCallback();
+});
+
+test('stable packet selection survives history insertion before the selected transaction', async () => {
+  const h = createHarness(); await h.flush();
+  const old = { ...entry('TX', '3F 03 00 00 00 01'), timestamp: '2026-01-01T00:00:01.000Z' };
+  const selected = { ...entry('TX', '3F 05 00 02 FF 00'), timestamp: '2026-01-01T00:00:02.000Z' };
+  h.subscriptions[0].callback(snapshot([old, selected]));
+  const trace = h.panel.shadowRoot.querySelector('#trace');
+  trace.children[1].onclick();
+  const selectedKey = h.Constructor.entryKey(selected);
+  assert.equal(h.panel._selectedTransactionKey, selectedKey);
+  const earlier = { ...entry('TX', '01 03 00 00 00 01'), timestamp: '2026-01-01T00:00:00.000Z' };
+  h.subscriptions[0].callback(snapshot([earlier, old, selected]));
+  const row = trace.children.find((item) => item.dataset.entryKey === selectedKey);
+  assert.ok(row.className.includes('selected'));
+  assert.equal(h.panel._selectedTransactionKey, selectedKey);
+  assert.match(h.panel.shadowRoot.querySelector('#decoder').textContent, /Relay 3/);
+  h.panel.disconnectedCallback();
+});
+
 test('gateway switching ignores stale events and keeps a single live subscription', async () => {
-  const h = createHarness(); await h.flush(); await h.panel._select('two');
+  const h = createHarness(); await h.flush();
+  h.subscriptions[0].callback(snapshot([entry('TX', '3F 03')]));
+  assert.equal(h.panel._history.length, 1);
+  await h.panel._select('two');
+  assert.equal(h.panel._history.length, 0);
   assert.equal(h.subscriptions[0].closed, true);
   h.subscriptions[0].callback(snapshot([entry('TX', 'STALE')]));
   assert.doesNotMatch(h.panel.shadowRoot.querySelector('#trace').textContent, /STALE/);
   h.subscriptions[1].callback(snapshot([entry('TX', 'NEW')]));
   assert.match(h.panel.shadowRoot.querySelector('#trace').textContent, /NEW/);
+  assert.equal(h.panel._history.length, 1);
   h.panel.hass = h.hass; await h.flush(); assert.equal(h.subscriptions.length, 2);
   h.panel.disconnectedCallback(); h.panel.connectedCallback(); await h.flush();
   assert.equal(h.subscriptions.filter((item) => !item.closed).length, 1);
@@ -352,7 +511,7 @@ test('gateway switching ignores stale events and keeps a single live subscriptio
 test('no loaded gateway and server errors do not invent controls', async () => {
   const h = createHarness([]); await h.flush();
   assert.equal(h.subscriptions.length, 0);
-  assert.match(h.panel.shadowRoot.querySelector('#status').textContent, /尚無/);
+  assert.equal(h.panel.shadowRoot.querySelector('#gateway-status').textContent, '尚未載入');
   await h.panel._clear(); assert.equal(h.calls.length, 1);
   h.hass.callWS = async () => { throw new Error('unauthorized'); };
   await h.panel._connect(); assert.equal(h.panel.shadowRoot.querySelector('#error').textContent, 'unauthorized');

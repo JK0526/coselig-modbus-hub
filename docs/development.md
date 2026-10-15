@@ -1,4 +1,4 @@
-# v1.3.1 開發架構與驗證依據
+# v1.3.2 開發架構與驗證依據
 
 更新：2026-10-15。v1.0 取代 v0.2.x 的 MQTT／Panel／Channel 架構；歷史問題盤點保留於 `docs/specs/`，不作新版開發規範。
 
@@ -81,7 +81,7 @@ Polling=0 只讓背景scheduler等待Event，既有狀態／failure保留，寫�
 
 20輪時間deque只量測bus round，不含lock等待／下一輪sleep；不自動調interval或降頻Slave。原生 Entity／Child Device Registry 的 area_id 完全由 HA 與使用者管理，不加入 area 欄位或 mapping table。
 
-Monitor訂閱每0.5秒讀取ring、Coordinator health／round time、Transport counters／queue 與Configured Device metadata，只在整體快照變更時推送；helper只取runtime記憶體，沒有任何Transport.submit／Modbus I/O。Statistics與Clear Trace分離。Sidebar有Gateway、Communication Statistics、Device Health、Packet Decoder；Slave／Type filter、裝置點擊與Auto-scroll都只有前端效果。transaction grouping由Raw entries推導，Decoder涵蓋FC01～FC06與FC81～FC86 exception；Trace status保留CRC權威判定。Pause只凍結render，Auto-scroll獨立。所有WS命令要求admin，只提供list／subscribe／clear，沒有register或設定寫入。Trace例外隔離；完整RX記錄在原CRC驗證前，結果之後另記OK／ERROR及latency。狀態色維持固定TX／RX／OK／TIMEOUT／CRC ERROR／ERROR，背景與卡片使用HA theme variables。
+Monitor訂閱每0.5秒讀取ring、Coordinator health／round time、Transport counters／queue 與Configured Device metadata，只在整體快照變更時推送；helper只取runtime記憶體，沒有任何Transport.submit／Modbus I/O。Backend TraceBuffer維持200筆；Monitor browser page另外在記憶體累積最多1000筆暫存歷史，reload、Gateway切換與Clear後清除，不用LocalStorage／Recorder／database。Sidebar依序顯示閘道器、封包解析、設備狀態、通訊統計；左右欄在desktop各自捲動。Slave／Type filter、裝置點擊與Auto-scroll都只有前端效果。transaction grouping由Raw entries推導，Decoder涵蓋FC01～FC06與FC81～FC86 exception；Trace status保留CRC權威判定。Pause只凍結render但仍ingest snapshot。Auto-scroll OFF以entry stable key與viewport offset保持閱讀位置；選取封包以transaction stable key保存。所有WS命令要求admin，只提供list／subscribe／clear，沒有register或設定寫入。Trace例外隔離；完整RX記錄在原CRC驗證前，結果之後另記OK／ERROR及latency。狀態色維持固定TX／RX／OK／TIMEOUT／CRC ERROR／ERROR，背景與卡片使用HA theme variables。
 
 ## v1.1.1 行為
 
@@ -95,4 +95,8 @@ P210 的 Group A 可選 `single` 或 `cct`；single 建立 CH1／CH2，cct 只�
 
 Config Flow options 以 HA Native menu/form 實作，不新增 frontend；Flow 管理器在確認摘要前不呼叫 `async_create_entry`。既有 Device 只在獨立 Edit／Remove intents 被選取，Add 的 selector 僅接受 New Slave，Missing 保留。對未修改 Slave 重新序列化的是原 `Device` profile 的值，entity registry identities、Parent／Child identifiers、Area 與自訂名稱策略維持不變。Entry version/minor version仍是2.1。
 
-Diagnostic Monitor 擴充原有 subscribe snapshot，保留list／subscribe／clear三種WebSocket commands與約500ms changed-only publish。前端只衍生 transaction、filter及decoder view，不建立Graph／歷史資料，也不增加Modbus request；Clear只清Trace ring，不清Transport counters。
+Diagnostic Monitor 擴充原有 subscribe snapshot，保留list／subscribe／clear三種WebSocket commands與約500ms changed-only publish。前端只衍生 transaction、filter及decoder view，不建立Graph，也不增加Modbus request；Clear清Trace ring與browser local history，不清Transport counters。
+
+## v1.3.2 UI 與品牌行為
+
+Monitor仍是唯讀 observer。Backend的200筆TraceBuffer不變；前端最多保存1000筆目前頁面生命週期的local history，pause期間持續ingest。自動捲動關閉時，以entry key、timestamp fallback與row offset恢復viewport anchor；transaction選取使用TX／第一筆entry的stable key。Desktop固定viewport工作區讓Trace與Sidebar獨立捲動，封包解析置頂，設備清單最高240px。Monitor主要標題與Card labels使用繁體中文。對外型號只稱Coselig P404、P210、R410。
