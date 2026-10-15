@@ -41,14 +41,14 @@ def ensure_s402_parent_device(
     return registry.async_get_or_create(
         config_entry_id=entry.entry_id,
         identifiers={(DOMAIN, f"{entry.entry_id}_s402_{device_id}")},
-        name=f"Coselig S402 #{device_id}",
+        name=f"S402 #{device_id}",
         manufacturer="Coselig",
         model="S402",
     )
 
 
 async def async_setup(hass: HomeAssistant, config: dict) -> bool:
-    """Register the optional read-only console once for this integration domain."""
+    """Register the optional admin Monitor once for this integration domain."""
     from .monitor import async_register_monitor
 
     await async_register_monitor(hass)

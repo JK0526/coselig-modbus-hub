@@ -1,4 +1,4 @@
-"""Read-only trace console: three admin WS commands and one static panel."""
+"""Trace console with admin-only, runtime background polling controls."""
 
 from __future__ import annotations
 
@@ -41,6 +41,14 @@ def _snapshot(hub: Any) -> dict[str, Any]:
         "connected": hub.transport.connected,
         "poll_interval": hub.coordinator.poll_interval,
         "polling_paused": hub.coordinator.polling_paused,
+        "runtime_poll_paused": hub.coordinator.runtime_poll_paused,
+        "polling_state": (
+            "disabled"
+            if hub.coordinator.polling_paused
+            else "paused"
+            if hub.coordinator.runtime_poll_paused
+            else "running"
+        ),
         "coordinator": {
             "configured_slaves": len(devices),
             "available_slaves": sum(device["available"] for device in devices),
@@ -67,6 +75,8 @@ def _empty_snapshot() -> dict[str, Any]:
         "connected": False,
         "poll_interval": None,
         "polling_paused": True,
+        "runtime_poll_paused": False,
+        "polling_state": "unloaded",
         "coordinator": {
             "configured_slaves": 0,
             "available_slaves": 0,
@@ -154,8 +164,49 @@ def websocket_clear(
     connection.send_result(msg["id"])
 
 
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): f"{DOMAIN}/monitor/poll",
+        vol.Required("entry_id"): str,
+        vol.Required("paused"): vol.Boolean(),
+    }
+)
+@websocket_api.require_admin
+@callback
+def websocket_poll(
+    hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]
+) -> None:
+    """Change only this loaded Hub's runtime background polling state."""
+    hub = _hub(hass, msg["entry_id"])
+    if hub is None:
+        connection.send_error(
+            msg["id"], "not_loaded", "Gateway integration is not loaded"
+        )
+        return
+    coordinator = hub.coordinator
+    if not coordinator.set_runtime_poll_paused(msg["paused"]):
+        connection.send_error(
+            msg["id"],
+            "polling_disabled",
+            "Background polling is disabled by the configured poll interval",
+        )
+        return
+    connection.send_result(
+        msg["id"],
+        {
+            "runtime_poll_paused": coordinator.runtime_poll_paused,
+            "polling_state": "paused" if coordinator.runtime_poll_paused else "running",
+        },
+    )
+
+
 async def async_register_monitor(hass: HomeAssistant) -> None:
-    for handler in (websocket_list, websocket_subscribe, websocket_clear):
+    for handler in (
+        websocket_list,
+        websocket_subscribe,
+        websocket_clear,
+        websocket_poll,
+    ):
         websocket_api.async_register_command(hass, handler)
     await hass.http.async_register_static_paths(
         [

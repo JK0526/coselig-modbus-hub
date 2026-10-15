@@ -1,8 +1,8 @@
 # Coselig Modbus Hub
 
-將 Coselig P404、P210、R410 與 S402，透過 RS485 → TCP Gateway 原生整合進 Home Assistant。整合建立原生 Light／Switch／Event 與 Device，使用 Home Assistant Config Flow 設定，無需 MQTT、Node-RED 或 YAML，並內建唯讀 Modbus Monitor。
+將 Coselig P404、P210、R410 與 S402，透過 RS485 → TCP Gateway 原生整合進 Home Assistant。整合建立原生 Light／Switch／Event 與 Device，使用 Home Assistant Config Flow 設定，無需 MQTT、Node-RED 或 YAML，並內建管理員限定的 Modbus Monitor。
 
-目前測試版本：**v1.4.0-beta.1**（S402 實機共存驗收中）。Config Entry schema 維持 **2.1**。
+目前測試版本：**v1.4.0-beta.2**（S402 實機共存驗收中）。Config Entry schema 維持 **2.1**。
 
 ## 功能特色
 
@@ -12,7 +12,8 @@
 - 建立原生 Home Assistant Device、Light 與 Switch。
 - 可修改既有設備型號與輸出模式，也可個別移除設備。
 - 背景 Polling 週期可調整或停用。
-- 內建只讀取既有通訊資料的 Diagnostic Monitor。
+- 管理員可在 Monitor 暫停／恢復背景 Poll，且不會修改儲存的 Poll 週期；Control 與 S402 EVENT 維持運作。
+- 內建 Monitor 可查看通訊紀錄，管理員可控制執行期背景 Poll。
 - 可建立多個 Gateway Config Entry，分別管理不同的 RS485 Bus。
 
 ## 支援設備
@@ -80,7 +81,7 @@ S402 ID 與 Modbus Slave 位址屬於不同位址空間。啟用 S402 4x 模式�
 
 Sidebar 顯示 Gateway 狀態、Packet Decoder、Device Health 與 Communication Statistics。S402 事件以獨立 EVENT Trace 顯示，不併入前後 Poll transaction；點選事件可查看 S402 ID、DI、單擊類型與是否已設定。點選封包可檢視解碼資訊；Decoder 不在 Sidebar 可視範圍時，才會在使用者點選後捲入視野。統計文案為「自本次啟動起累計」，S402 事件不增加 Modbus request 統計。
 
-Backend TraceBuffer 保留最多 **200 筆**，目前頁面另暫存最多 **1000 筆**供瀏覽。瀏覽器 reload 或切換 Gateway 後，前端暫存歷史會消失。Clear 清除 Trace，但保留通訊統計；Pause 只暫停畫面更新，Auto-scroll 可控制是否跟隨最新封包。Monitor 為唯讀，不會新增 Modbus request，也不提供任意 register 寫入。
+Backend TraceBuffer 保留最多 **200 筆**，目前頁面另暫存最多 **1000 筆**供瀏覽。瀏覽器 reload 或切換 Gateway 後，前端暫存歷史會消失。Clear 清除 Trace，但保留通訊統計；「暫停畫面」只凍結畫面更新，Auto-scroll 可控制是否跟隨最新封包。「暫停輪詢」只停止背景 Poll；不取消已送出的 request，也不影響 Control、Scanner、Continuous RX、S402 EVENT 或 reconnect。Monitor 不會發出任意 Modbus register 寫入。
 
 ## 多 Gateway
 
@@ -100,7 +101,7 @@ Backend TraceBuffer 保留最多 **200 筆**，目前頁面另暫存最多 **100
 - S402 只提供四路 DI 單擊事件；不提供按下／放開、雙擊或長按事件，也無法推斷單顆 S402 的在線狀態。
 - S402 4x 模式會保留普通 Modbus Slave #1；同一 Gateway／Bus 不得同時設定普通 Slave #1。
 - R410 DI 目前不提供實體。
-- Monitor 唯讀，不提供 arbitrary register write。
+- Monitor 不提供 arbitrary Modbus register write；輪詢暫停只改執行期排程狀態。
 - 不提供 RS485 multi-master arbitration。
 
 ## 疑難排解
@@ -123,13 +124,13 @@ Backend TraceBuffer 保留最多 **200 筆**，目前頁面另暫存最多 **100
 
 ## 更新
 
-HACS 會依 GitHub Release 提供可更新版本；若要安裝本次 Beta，請在 HACS 該 Repository 啟用 **預發布版本（pre-release）**更新。更新後請閱讀該版本的 Release Notes，依說明決定是否需要 reload 或重新啟動 Home Assistant。v1.4.0-beta.1 的 Config Entry schema 維持 2.1，不需只為更新版本而刪除並重建整合。此 Beta 尚待 S402 與 Poll／Control 共存的實機驗收。
+HACS 會依 GitHub Release 提供可更新版本；若要安裝本次 Beta，請在 HACS 該 Repository 啟用 **預發布版本（pre-release）**更新。更新後請閱讀該版本的 Release Notes，依說明決定是否需要 reload 或重新啟動 Home Assistant。v1.4.0-beta.2 的 Config Entry schema 維持 2.1，不需只為更新版本而刪除並重建整合。此 Beta 尚待 S402 與 Poll／Control 共存的實機驗收。
 
 ## 開發與驗收文件
 
 - [開發與維護指南](docs/development.md)
 - [v1.3.3 Release Notes](docs/v1.3.3-release-notes.md)
-- [v1.4.0-beta.1 Release Notes](docs/v1.4.0-beta.1-release-notes.md)
+- [v1.4.0-beta.2 Release Notes](docs/v1.4.0-beta.2-release-notes.md)
 - [S402 實機驗收清單](docs/v1.4.0-s402-acceptance.md)
 - [架構文件](docs/v1.3.0-architecture.md)
 - [實機驗收清單](docs/v1.0-acceptance.md)

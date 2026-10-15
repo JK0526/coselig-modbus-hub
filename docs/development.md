@@ -1,6 +1,6 @@
-# v1.4.0-beta.1 開發與維護指南
+# v1.4.0-beta.2 開發與維護指南
 
-更新：2026-10-15。本文描述 v1.4.0-beta.1 架構、Runtime 行為、維護界線與可重現驗證方式。S402 與既有 Poll／Control 的硬體共存仍待驗收。使用者操作請看 [README](../README.md)；版本差異以 [GitHub Releases](https://github.com/JK0526/coselig-modbus-hub/releases) 與各版 Release Notes 為準。歷史問題盤點保留在 `docs/specs/`，不作新版規範。
+更新：2026-10-15。本文描述 v1.4.0-beta.2 架構、Runtime 行為、維護界線與可重現驗證方式。S402 與既有 Poll／Control 的硬體共存仍待驗收。使用者操作請看 [README](../README.md)；版本差異以 [GitHub Releases](https://github.com/JK0526/coselig-modbus-hub/releases) 與各版 Release Notes 為準。歷史問題盤點保留在 `docs/specs/`，不作新版規範。
 
 ## 架構與模組責任
 
@@ -13,7 +13,7 @@
 | `protocol.py` | CRC16、通用 FC01～FC06、例外回覆、echo 驗證、ADU 解析 |
 | `transport.py` | 一條 TCP socket、序列化 TX worker、唯一 Continuous RX reader、pending response Future、控制優先、bounded queue 與交易統計 |
 | `scanner.py` | 獨佔 bus 搜尋、Slave discovery 與 family probe |
-| `coordinator.py` | 輪詢週期、設備狀態 cache、availability、failure threshold 與 reconnect |
+| `coordinator.py` | 輪詢週期、per-Hub runtime Poll pause、設備狀態 cache、availability、failure threshold 與 reconnect |
 | `hub.py` | 組合 Transport／Coordinator，管理啟停與掃描 |
 | `light.py`／`switch.py` | 原生 HA entity、optimistic state、FC06／FC05 控制 |
 | `event.py` | 每顆 S402 的四個原生 EventEntity 與 Gateway availability |
@@ -21,7 +21,7 @@
 | `config_flow.py` | 初始設定、搜尋範圍、Options intents、Reconfigure |
 | `__init__.py` | Config Entry runtime_data、平台生命週期與 registry 差異清理 |
 | `diagnostics.py` | 遮罩 Host 的 runtime diagnostics |
-| `trace.py`／`monitor.py`／`monitor.js` | 記憶體 trace、管理員 WebSocket API、EVENT routing 與唯讀前端 |
+| `trace.py`／`monitor.py`／`monitor.js` | 記憶體 trace、管理員 WebSocket API、EVENT routing 與 Poll runtime 控制前端 |
 
 正式整合只有一套 runtime；不使用 MQTT、自訂 Entity Registry、資料庫、外部 Modbus packet library 或第二套 Gateway worker。
 
@@ -109,13 +109,15 @@ Transaction 由 raw entries 分組，stable key 使用交易 TX entry key；孤�
 
 Sidebar 使用單一主要垂直 scroll context；Decoder 卡片在 normal flow，desktop 內容高度上限為 `min(38vh, 360px)` 並可內部捲動。只有使用者 click Trace row 且 Decoder 超出 Sidebar viewport 時，才呼叫 smooth `scrollIntoView`。Snapshot refresh 會保留 Sidebar scrollTop；filter、pause/resume 不會主動捲動。窄螢幕改為 Sidebar 在 Trace 上方的自然單欄，不對整頁強制 scrollIntoView。Device Health 清單固定最高 240px；通訊統計值直接呈現既有 Transport counters。Caption「自本次啟動起累計」只是文案，沒有 runtime duration／uptime 欄位。
 
+Monitor 的「暫停輪詢」只改 Coordinator 的執行期狀態，不寫入 Config Entry Options；每個 Config Entry 各自保存該狀態，reload 後清除。設定週期為 0 時，Monitor 顯示「設定停用」且不能 runtime-resume。此控制只停背景輪詢，不取消 in-flight request，不攔截明確控制、Scanner、Continuous RX、S402 EVENT 或 reconnect；恢復時喚醒原 scheduler，不建立 poll backlog。
+
 所有 filter、transaction decoder、Device Health 與 counters presentation 都是 frontend view。Monitor 不讀 Recorder、不寫資料庫、不提供任意 Modbus command／register write。
 
 ## 測試與可重現環境
 
 開發依賴由 `pyproject.toml`／`uv.lock` 固定。基準環境：Home Assistant **2026.10.1**、Python **3.14.7**、pytest-homeassistant-custom-component **0.13.372**。v1.3.3 基線：**440 Python tests、36 frontend tests、99.57% branch coverage**；Config Flow line／branch coverage 要求 100%。
 
-v1.4.0-beta.1 自動驗證結果：**512 Python tests、38 frontend tests、99.95% branch coverage、Config Flow line／branch coverage 100%**。S402 實機與既有 Poll／Control 共存仍是 Pending，這些自動測試不代表硬體驗收通過。
+v1.4.0-beta.2 自動驗證結果：**520 Python tests、39 frontend tests、99.75% branch coverage、Config Flow line／branch coverage 100%**。S402 實機與既有 Poll／Control 共存仍是 Pending，自動測試不代表硬體驗收通過。
 
 本機檢查命令：
 

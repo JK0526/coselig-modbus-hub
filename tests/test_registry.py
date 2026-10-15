@@ -5,7 +5,6 @@ from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
 
 from custom_components.coselig_modbus_hub import (
-    ensure_s402_parent_device,
     prune_registries,
 )
 from custom_components.coselig_modbus_hub.const import DOMAIN
@@ -179,7 +178,14 @@ async def test_s402_registry_pruning_removes_only_selected_s402(hass, entry):
     s402_entities = {}
     s402_devices = {}
     for device_id in (7, 12):
-        device = ensure_s402_parent_device(hass, entry, device_id)
+        # Existing v1.4.0-beta.1 device name is changed in place on reload.
+        device = device_registry.async_get_or_create(
+            config_entry_id=entry.entry_id,
+            identifiers={(DOMAIN, f"{entry.entry_id}_s402_{device_id}")},
+            name=f"Coselig S402 #{device_id}",
+            manufacturer="Coselig",
+            model="S402",
+        )
         s402_devices[device_id] = device.id
         for di in range(1, 5):
             unique_id = f"{entry.entry_id}_s402_{device_id}_di{di}"
@@ -195,9 +201,25 @@ async def test_s402_registry_pruning_removes_only_selected_s402(hass, entry):
             s402_entities[(device_id, di)] = entity.entity_id
 
     prune_registries(hass, entry)
+    assert {
+        device_id: device_registry.async_get(device_id_value).name
+        for device_id, device_id_value in s402_devices.items()
+    } == {7: "S402 #7", 12: "S402 #12"}
     assert all(
         entity_registry.async_get(entity_id) for entity_id in s402_entities.values()
     )
+    from homeassistant.helpers import area_registry as ar
+
+    custom_area = ar.async_get(hass).async_create("S402 user area")
+    custom_entity_id = s402_entities[(12, 2)]
+    entity_registry.async_update_entity(
+        custom_entity_id, name="Custom DI2", area_id=custom_area.id
+    )
+    device_registry.async_update_device(s402_devices[12], name_by_user="Hall S402")
+    # Reload/pruning reuses the identity and updates only the integration's default name.
+    prune_registries(hass, entry)
+    assert device_registry.async_get(s402_devices[12]).name == "S402 #12"
+    assert device_registry.async_get(s402_devices[12]).name_by_user == "Hall S402"
     hass.config_entries.async_update_entry(
         entry,
         options={**options, "s402_devices": [{"id": 12}]},
@@ -212,6 +234,9 @@ async def test_s402_registry_pruning_removes_only_selected_s402(hass, entry):
     )
     assert device_registry.async_get(s402_devices[7]) is None
     assert device_registry.async_get(s402_devices[12]) is not None
+    custom_entity = entity_registry.async_get(custom_entity_id)
+    assert custom_entity.name == "Custom DI2"
+    assert custom_entity.area_id == custom_area.id
     for unique_id, (entity_id, name) in outputs.items():
         saved = entity_registry.async_get(entity_id)
         assert saved is not None

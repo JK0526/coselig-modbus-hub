@@ -6,6 +6,8 @@ from homeassistant.helpers import entity_registry as er
 
 from custom_components.coselig_modbus_hub.hub import Hub
 from custom_components.coselig_modbus_hub.models import Device, Model
+from custom_components.coselig_modbus_hub.protocol import frame
+from tests.dimmer_packets import write
 
 
 @pytest.fixture
@@ -170,13 +172,89 @@ async def test_pause_while_round_inflight_does_not_submit_next_slave(hass, gatew
         2,
     )
     gateway.block = True
-    task = asyncio.create_task(hub.coordinator.async_poll_round(background=True))
-    await gateway.arrived.wait()
-    hub.coordinator.set_poll_interval(0)
-    gateway.release.set()
-    await task
+    with patch.object(
+        type(hub.coordinator.devices[0].profile),
+        "poll_specs",
+        side_effect=lambda device: (device.profile.poll, device.profile.poll),
+    ):
+        task = asyncio.create_task(hub.coordinator.async_poll_round(background=True))
+        await gateway.arrived.wait()
+        hub.coordinator.set_runtime_poll_paused(True)
+        gateway.release.set()
+        await task
+    await hub.coordinator.async_poll_round(background=True)
     assert [r[0] for r in gateway.requests] == [1]
+    assert hub.coordinator.poll_interval == 2
+    assert hub.coordinator.runtime_poll_paused
     await hub.stop()
+
+
+async def test_runtime_pause_parks_scheduler_and_resume_has_no_backlog(hass, gateway):
+    hub = Hub.create(hass, "127.0.0.1", gateway.port, (Device(1, Model.P404),), 0.5)
+    await hub.start()
+    gateway.requests.clear()
+    gateway.arrived.clear()
+    gateway.release.clear()
+    gateway.block = True
+    try:
+        await asyncio.wait_for(gateway.arrived.wait(), 1)
+        hub.coordinator.set_runtime_poll_paused(True)
+        gateway.release.set()
+        await asyncio.sleep(0.65)
+        assert (
+            len(gateway.requests) == 1
+        )  # Current request completed; next spec/poll parked.
+        assert hub.coordinator.poll_interval == 0.5
+
+        gateway.block = True
+        gateway.release.clear()
+        gateway.arrived.clear()
+        before_resume = len(gateway.requests)
+        hub.coordinator.set_runtime_poll_paused(False)
+        await asyncio.wait_for(gateway.arrived.wait(), 1)
+        hub.coordinator.set_runtime_poll_paused(True)
+        gateway.release.set()
+        await asyncio.sleep(0.65)
+        assert len(gateway.requests) == before_resume + 1
+    finally:
+        await hub.stop()
+
+
+async def test_control_scanner_and_s402_events_remain_live_while_poll_paused(
+    hass, gateway
+):
+    hub = Hub.create(
+        hass,
+        "127.0.0.1",
+        gateway.port,
+        (Device(1, Model.P404),),
+        2,
+        s402_ids=(7,),
+    )
+    await hub.start()
+    seen = []
+    event_received = asyncio.Event()
+    hub.subscribe_s402(7, 1, lambda event: (seen.append(event), event_received.set()))
+    hub.coordinator.set_runtime_poll_paused(True)
+    try:
+        gateway.requests.clear()
+        await hub.coordinator.async_command(
+            1, write(1, 0x082A, 88), (1, "ch1", "brightness")
+        )
+        assert [request[1] for request in gateway.requests] == [6]
+
+        scan_results = await hub.scan(51, 51)
+        assert [result.slave for result in scan_results] == [51]
+        assert not hub.coordinator.scanning
+
+        writer = next(writer for writer in gateway.writers if not writer.is_closing())
+        writer.write(frame(bytes([1, 6, 1, 0xA0, 7, 1])))
+        await writer.drain()
+        await asyncio.wait_for(event_received.wait(), 1)
+        assert len(seen) == 1
+        assert hub.coordinator.runtime_poll_paused
+    finally:
+        await hub.stop()
 
 
 async def test_schedule_wait_timeout_does_not_change_health(hub):

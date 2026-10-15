@@ -50,7 +50,7 @@ class S402DIEvent(CoordinatorEntity[Coordinator], EventEntity):
         self._attr_unique_id = f"{entry_id}_s402_{device_id}_di{di}"
         self._attr_device_info = DeviceInfo(
             identifiers={(DOMAIN, f"{entry_id}_s402_{device_id}")},
-            name=f"Coselig S402 #{device_id}",
+            name=f"S402 #{device_id}",
             manufacturer="Coselig",
             model="S402",
         )

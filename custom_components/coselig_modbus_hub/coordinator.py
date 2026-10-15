@@ -54,6 +54,7 @@ class Coordinator(DataUpdateCoordinator[dict[int, DeviceState]]):
         self.states = {device.slave: DeviceState() for device in devices}
         self.gateway_available = True
         self.scanning = False
+        self._runtime_poll_paused = False
         self._round_lock = asyncio.Lock()
         self._task: asyncio.Task[None] | None = None
         self._backoff_index = 0
@@ -64,7 +65,18 @@ class Coordinator(DataUpdateCoordinator[dict[int, DeviceState]]):
 
     @property
     def polling_paused(self) -> bool:
+        """Whether background polling is disabled by the saved configuration."""
         return self.poll_interval == 0
+
+    @property
+    def runtime_poll_paused(self) -> bool:
+        """Whether background polling is paused for this running Hub only."""
+        return self._runtime_poll_paused
+
+    @property
+    def background_polling_paused(self) -> bool:
+        """Whether the background poll scheduler must remain idle."""
+        return self.polling_paused or self.runtime_poll_paused
 
     @property
     def last_poll_round_ms(self) -> float:
@@ -83,6 +95,14 @@ class Coordinator(DataUpdateCoordinator[dict[int, DeviceState]]):
             raise ValueError("Poll interval must be 0 or >= 0.5 seconds")
         self.poll_interval = interval
         self._schedule_wake.set()
+
+    def set_runtime_poll_paused(self, paused: bool) -> bool:
+        """Pause or resume background polling without changing saved options."""
+        if self.polling_paused:
+            return False
+        self._runtime_poll_paused = paused
+        self._schedule_wake.set()
+        return True
 
     async def _wait_for_schedule(self, timeout: float | None = None) -> None:
         try:
@@ -124,7 +144,7 @@ class Coordinator(DataUpdateCoordinator[dict[int, DeviceState]]):
     async def _poll_devices(self, *, background: bool) -> None:
         successes = 0
         for device in self.devices:
-            if background and self.polling_paused:
+            if background and self.background_polling_paused:
                 return
             state = self.states[device.slave]
             started = asyncio.get_running_loop().time()
@@ -132,6 +152,8 @@ class Coordinator(DataUpdateCoordinator[dict[int, DeviceState]]):
             try:
                 data = ModbusData()
                 for spec in device.profile.poll_specs(device):
+                    if background and self.background_polling_paused:
+                        return
                     response = await self.transport.submit(
                         spec.request(device.slave), poll=True
                     )
@@ -189,7 +211,7 @@ class Coordinator(DataUpdateCoordinator[dict[int, DeviceState]]):
                 self.gateway_available = True
                 self._backoff_index = 0
                 _LOGGER.info("Gateway restored")
-                if self.polling_paused:
+                if self.background_polling_paused:
                     # No reconnect FC03 while paused. Restore previously confirmed health.
                     for state in self.states.values():
                         state.available = (
@@ -198,7 +220,7 @@ class Coordinator(DataUpdateCoordinator[dict[int, DeviceState]]):
                 # Event-only entities depend on gateway health even when there
                 # are no pollable devices or polling is paused.
                 self.async_set_updated_data(self.states)
-            if self.polling_paused:
+            if self.background_polling_paused:
                 await self._wait_for_schedule()
                 continue
             self._schedule_wake.clear()

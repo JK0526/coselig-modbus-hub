@@ -62,7 +62,7 @@ async def test_s402_only_gateway_event_entities_availability_and_reload_lifecycl
     device_registry = dr.async_get(hass)
     parents = dr.async_entries_for_config_entry(device_registry, entry.entry_id)
     assert len(parents) == 1
-    assert parents[0].name == "Coselig S402 #7"
+    assert parents[0].name == "S402 #7"
     assert parents[0].manufacturer == "Coselig"
     assert parents[0].model == "S402"
 
@@ -133,6 +133,122 @@ async def test_s402_only_gateway_event_entities_availability_and_reload_lifecycl
     )
     assert state_changes.count(current_di3.entity_id) == 1
     unsub()
+    assert await hass.config_entries.async_unload(entry.entry_id)
+
+
+async def test_multiple_s402_display_names_and_reload_identity(hass, entry, gateway):
+    from homeassistant.helpers import area_registry as ar
+
+    hass.config_entries.async_update_entry(
+        entry,
+        data={"host": "127.0.0.1", "port": gateway.port},
+        options={
+            "poll_interval": 0,
+            "scan_start": 1,
+            "scan_end": 247,
+            "devices": [],
+            "s402_devices": [{"id": 7}, {"id": 12}],
+        },
+    )
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+    device_registry = dr.async_get(hass)
+    entity_registry = er.async_get(hass)
+
+    def current_parents():
+        return {
+            next(
+                value for domain, value in device.identifiers if domain == DOMAIN
+            ): device
+            for device in dr.async_entries_for_config_entry(
+                device_registry, entry.entry_id
+            )
+        }
+
+    expected_identifiers = {
+        f"{entry.entry_id}_s402_7": "S402 #7",
+        f"{entry.entry_id}_s402_12": "S402 #12",
+    }
+    parents = current_parents()
+    assert {
+        identifier: device.name for identifier, device in parents.items()
+    } == expected_identifiers
+    assert {
+        identifier: device.identifiers for identifier, device in parents.items()
+    } == {identifier: {(DOMAIN, identifier)} for identifier in expected_identifiers}
+
+    entities = er.async_entries_for_config_entry(entity_registry, entry.entry_id)
+    assert len(entities) == 8
+    entity_ids = {entity.unique_id: entity.entity_id for entity in entities}
+    assert set(entity_ids) == {
+        f"{entry.entry_id}_s402_{device_id}_di{di}"
+        for device_id in (7, 12)
+        for di in range(1, 5)
+    }
+    for device_id in (7, 12):
+        parent_id = parents[f"{entry.entry_id}_s402_{device_id}"].id
+        assert {
+            entity.device_id
+            for entity in entities
+            if entity.unique_id.startswith(f"{entry.entry_id}_s402_{device_id}_")
+        } == {parent_id}
+
+    area = ar.async_get(hass).async_create("S402 room")
+    custom_entity_id = entity_ids[f"{entry.entry_id}_s402_12_di2"]
+    entity_registry.async_update_entity(
+        custom_entity_id, name="Entrance DI", area_id=area.id
+    )
+    custom_device = parents[f"{entry.entry_id}_s402_12"]
+    device_registry.async_update_device(custom_device.id, name_by_user="Entry S402")
+
+    assert await hass.config_entries.async_reload(entry.entry_id)
+    await hass.async_block_till_done()
+    reloaded_entities = er.async_entries_for_config_entry(
+        entity_registry, entry.entry_id
+    )
+    reloaded_parents = current_parents()
+    assert len(reloaded_entities) == 8
+    assert {
+        entity.unique_id: entity.entity_id for entity in reloaded_entities
+    } == entity_ids
+    assert {
+        identifier: device.id for identifier, device in reloaded_parents.items()
+    } == {identifier: device.id for identifier, device in parents.items()}
+    assert {
+        identifier: device.name for identifier, device in reloaded_parents.items()
+    } == expected_identifiers
+    assert reloaded_parents[f"{entry.entry_id}_s402_12"].name_by_user == "Entry S402"
+    custom_entity = entity_registry.async_get(custom_entity_id)
+    assert custom_entity is not None
+    assert custom_entity.name == "Entrance DI"
+    assert custom_entity.area_id == area.id
+    assert await hass.config_entries.async_unload(entry.entry_id)
+
+
+async def test_runtime_poll_pause_clears_on_entry_reload(hass, entry, gateway):
+    hass.config_entries.async_update_entry(
+        entry,
+        data={"host": "127.0.0.1", "port": gateway.port},
+        options={
+            "poll_interval": 2.0,
+            "scan_start": 1,
+            "scan_end": 247,
+            "devices": [],
+        },
+    )
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+    previous_hub = entry.runtime_data
+    assert previous_hub.coordinator.set_runtime_poll_paused(True)
+    assert previous_hub.coordinator.runtime_poll_paused
+    assert entry.options["poll_interval"] == 2.0
+
+    assert await hass.config_entries.async_reload(entry.entry_id)
+    await hass.async_block_till_done()
+    assert entry.runtime_data is not previous_hub
+    assert not entry.runtime_data.coordinator.runtime_poll_paused
+    assert entry.runtime_data.coordinator.poll_interval == 2.0
+    assert entry.options["poll_interval"] == 2.0
     assert await hass.config_entries.async_unload(entry.entry_id)
 
 

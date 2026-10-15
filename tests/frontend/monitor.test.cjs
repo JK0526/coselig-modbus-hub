@@ -42,8 +42,8 @@ class Element {
 }
 
 const selectors = [
-  '#gateway', '#slave-filter', '#type-filter', '#clear', '#pause', '#auto-scroll',
-  '#error', '#trace', '#gateway-status', '#gateway-poll', '#gateway-devices',
+  '#gateway', '#slave-filter', '#type-filter', '#clear', '#pause', '#poll-control', '#auto-scroll',
+  '#error', '#trace', '#gateway-status', '#gateway-poll', '#gateway-poll-state', '#gateway-devices',
   '#gateway-last', '#gateway-average', '#gateway-queue', '#gateway-queue-peak',
   '#stat-success', '#stat-failed', '#stat-timeout', '#stat-crc', '#stat-reconnect',
   '#devices', '#device-summary', '#decoder', '#sidebar', '#decoder-card', '#stats-caption', '#stats-grid',
@@ -64,7 +64,15 @@ function createHarness(gateways = [{ entry_id: 'one', title: 'Gateway <script>' 
   const calls = [], subscriptions = [];
   const hass = {
     language: 'zh-TW',
-    callWS: async (request) => { calls.push(request); return request.type.endsWith('/list') ? gateways : undefined; },
+    callWS: async (request) => {
+      calls.push(request);
+      if (request.type.endsWith('/list')) return gateways;
+      if (request.type.endsWith('/poll')) return {
+        runtime_poll_paused: request.paused,
+        polling_state: request.paused ? 'paused' : 'running',
+      };
+      return undefined;
+    },
     connection: {
       subscribeMessage: async (callback, request) => {
         const sub = { callback, request, closed: false };
@@ -86,6 +94,7 @@ const entry = (direction, rawHex = '', latency = null, source = 'poll') => ({
 });
 const snapshot = (entries = [entry('TX', '33 06 08 2A 05 50'), entry('OK', '', 32)]) => ({
   connected: true, poll_interval: 2, polling_paused: false,
+  runtime_poll_paused: false, polling_state: 'running',
   coordinator: {
     configured_slaves: 2, available_slaves: 1, last_poll_round_ms: 218.4,
     average_poll_round_ms: 230.9, queue_depth: 0, queue_peak: 24,
@@ -151,6 +160,8 @@ test('diagnostic cards render gateway runtime metrics, counters and slave health
   const node = (id) => h.panel.shadowRoot.querySelector(id).textContent;
   assert.equal(node('#gateway-status'), '● 已連線');
   assert.equal(node('#gateway-poll'), '2.0 秒');
+  assert.equal(node('#gateway-poll-state'), '執行中');
+  assert.equal(node('#poll-control'), '暫停輪詢');
   assert.equal(node('#gateway-devices'), '1 / 2 在線');
   assert.equal(node('#gateway-last'), '218.4 ms');
   assert.equal(node('#gateway-average'), '230.9 ms');
@@ -164,6 +175,42 @@ test('diagnostic cards render gateway runtime metrics, counters and slave health
   assert.match(rows[0].textContent, /#63 R410.*在線/);
   assert.match(rows[1].textContent, /#70 P404.*離線.*失敗 2 次/);
   h.panel.disconnectedCallback();
+});
+
+test('runtime Poll control follows each selected gateway and never aliases trace pause', async () => {
+  const h = createHarness(); await h.flush();
+  h.subscriptions[0].callback(snapshot());
+  const pollButton = h.panel.shadowRoot.querySelector('#poll-control');
+  pollButton.onclick(); await h.flush();
+  assert.equal(pollButton.textContent, '恢復輪詢');
+  assert.equal(h.panel.shadowRoot.querySelector('#gateway-poll-state').textContent, '已暫停');
+  assert.equal(h.panel.shadowRoot.querySelector('#pause').textContent, '暫停畫面');
+  const existingTrace = h.panel.shadowRoot.querySelector('#trace').textContent;
+  h.panel.shadowRoot.querySelector('#pause').onclick();
+  h.subscriptions[0].callback({ ...snapshot([entry('TX', 'NEW TRACE')]),
+    runtime_poll_paused: true, polling_state: 'paused' });
+  assert.equal(h.panel.shadowRoot.querySelector('#gateway-poll-state').textContent, '已暫停');
+  assert.equal(h.panel.shadowRoot.querySelector('#trace').textContent, existingTrace);
+  h.panel.shadowRoot.querySelector('#pause').onclick();
+  assert.match(h.panel.shadowRoot.querySelector('#trace').textContent, /NEW TRACE/);
+  assert.deepEqual(JSON.parse(JSON.stringify(h.calls.find((call) => call.type.endsWith('/poll')))), {
+    type: 'coselig_modbus_hub/monitor/poll', entry_id: 'one', paused: true,
+  });
+
+  h.panel.shadowRoot.querySelector('#gateway').onchange({ target: { value: 'two' } });
+  await h.flush();
+  const second = { ...snapshot(), runtime_poll_paused: false, polling_state: 'running' };
+  h.subscriptions[1].callback(second);
+  assert.equal(pollButton.textContent, '暫停輪詢');
+  assert.equal(h.panel.shadowRoot.querySelector('#gateway-poll-state').textContent, '執行中');
+
+  h.subscriptions[1].callback({ ...snapshot(), poll_interval: 0, polling_paused: true,
+    runtime_poll_paused: false, polling_state: 'disabled' });
+  assert.equal(pollButton.textContent, '輪詢已由設定停用');
+  assert.equal(pollButton.disabled, true);
+  assert.equal(h.panel.shadowRoot.querySelector('#gateway-poll-state').textContent, '設定停用');
+  assert.equal(h.panel.shadowRoot.querySelector('#gateway-poll').textContent, '設定停用');
+  assert.equal(h.calls.filter((call) => call.type.endsWith('/poll')).length, 1);
 });
 
 test('Gateway card independently shows connected polling state, health and queue values', async () => {
@@ -515,7 +562,8 @@ test('Snapshot and resumed renders preserve Sidebar position without backend upt
   assert.equal(sidebar.scrollTop, 72);
   const snapshotCall = h.calls.find((call) => call.type.endsWith('/list'));
   assert.deepEqual(Object.keys(snapshot()).sort(), [
-    'connected', 'coordinator', 'devices', 'entries', 'poll_interval', 'polling_paused', 'statistics',
+    'connected', 'coordinator', 'devices', 'entries', 'poll_interval', 'polling_paused',
+    'polling_state', 'runtime_poll_paused', 'statistics',
   ]);
   assert.equal(snapshotCall.type, 'coselig_modbus_hub/monitor/list');
   h.panel.disconnectedCallback();

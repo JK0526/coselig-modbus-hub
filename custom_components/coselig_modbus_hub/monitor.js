@@ -68,6 +68,7 @@ class CoseligModbusMonitor extends HTMLElement {
           <option value="all">類型：全部</option><option value="TX">TX</option><option value="RX">RX</option><option value="OK">OK</option><option value="EVENT">事件</option><option value="Error">錯誤</option>
         </select>
         <button id="clear">清除封包</button><button id="pause">暫停畫面</button>
+        <button id="poll-control" disabled>輪詢狀態載入中</button>
         <label><input id="auto-scroll" type="checkbox" checked>自動捲動</label>
       </div>
       <div id="error" role="alert"></div>
@@ -75,7 +76,8 @@ class CoseligModbusMonitor extends HTMLElement {
         <section class="card trace-panel"><h2>原始封包</h2><div id="trace" class="trace-list" aria-label="Modbus Raw HEX"></div></section>
         <aside id="sidebar" class="sidebar">
           <section class="card"><h2>閘道器</h2><dl class="metric-grid">
-            <dt>狀態</dt><dd id="gateway-status" aria-live="polite">等待資料</dd><dt>輪詢</dt><dd id="gateway-poll">—</dd>
+            <dt>狀態</dt><dd id="gateway-status" aria-live="polite">等待資料</dd><dt>設定週期</dt><dd id="gateway-poll">—</dd>
+            <dt>背景輪詢</dt><dd id="gateway-poll-state">等待資料</dd>
             <dt>設備</dt><dd id="gateway-devices">—</dd><dt>最近輪詢</dt><dd id="gateway-last">—</dd>
             <dt>平均輪詢</dt><dd id="gateway-average">—</dd><dt>佇列</dt><dd id="gateway-queue">—</dd>
             <dt>佇列峰值</dt><dd id="gateway-queue-peak">—</dd>
@@ -93,6 +95,8 @@ class CoseligModbusMonitor extends HTMLElement {
       this.shadowRoot.querySelector("#slave-filter").onchange = () => this._filterChanged();
       this.shadowRoot.querySelector("#type-filter").onchange = () => this._filterChanged();
       this.shadowRoot.querySelector("#clear").onclick = () => this._clear();
+      this.shadowRoot.querySelector("#poll-control").onclick = () => this._togglePolling();
+      this.shadowRoot.querySelector("#pause").textContent = "暫停畫面";
       this.shadowRoot.querySelector("#pause").onclick = () => {
         this._paused = !this._paused;
         this.shadowRoot.querySelector("#pause").textContent = this._paused ? "繼續畫面" : "暫停畫面";
@@ -148,6 +152,7 @@ class CoseligModbusMonitor extends HTMLElement {
       } else {
         this._entry = null;
         this._latest = null;
+        this._renderPollControl(null);
         this._resetHistory();
         this._transactions = [];
         this.shadowRoot.querySelector("#gateway-status").textContent = "尚未載入";
@@ -165,6 +170,8 @@ class CoseligModbusMonitor extends HTMLElement {
     this._entry = entry;
     if (changedGateway) {
       this._latest = null;
+      this._pollControlPending = false;
+      this._renderPollControl(null);
       this._resetHistory();
       this._transactions = [];
       this._selectedTransactionKey = null;
@@ -180,6 +187,7 @@ class CoseligModbusMonitor extends HTMLElement {
         if (generation !== this._generation) return;
         this._latest = snapshot;
         this._ingestSnapshot(snapshot.entries || []);
+        this._renderPollControl(snapshot);
         if (!this._paused) this._render();
       }, { type: "coselig_modbus_hub/monitor/subscribe", entry_id: entry });
       if (generation !== this._generation) { await unsubscribe(); return; }
@@ -222,6 +230,54 @@ class CoseligModbusMonitor extends HTMLElement {
     } catch (error) { if (generation === this._generation) this._error(error); }
   }
 
+  async _togglePolling() {
+    const snapshot = this._latest;
+    const entry = this._entry;
+    const generation = this._generation;
+    if (!snapshot || !entry || this._pollControlPending || Number(snapshot.poll_interval) === 0) return;
+    const paused = !snapshot.runtime_poll_paused;
+    this._pollControlPending = true;
+    this._renderPollControl(snapshot);
+    try {
+      const result = await this._hass.callWS({
+        type: "coselig_modbus_hub/monitor/poll",
+        entry_id: entry,
+        paused,
+      });
+      if (generation !== this._generation || entry !== this._entry) return;
+      this._latest = { ...this._latest, ...result };
+      this.shadowRoot.querySelector("#error").textContent = "";
+    } catch (error) {
+      if (generation === this._generation && entry === this._entry) this._error(error);
+    } finally {
+      if (generation === this._generation && entry === this._entry) {
+        this._pollControlPending = false;
+        this._renderPollControl(this._latest);
+      }
+    }
+  }
+
+  _renderPollControl(snapshot) {
+    const button = this.shadowRoot.querySelector("#poll-control");
+    const state = this.shadowRoot.querySelector("#gateway-poll-state");
+    if (!snapshot || snapshot.poll_interval == null) {
+      button.textContent = "輪詢狀態載入中";
+      button.disabled = true;
+      state.textContent = "尚未載入";
+      return;
+    }
+    if (Number(snapshot.poll_interval) === 0) {
+      button.textContent = "輪詢已由設定停用";
+      button.disabled = true;
+      state.textContent = "設定停用";
+      return;
+    }
+    const paused = Boolean(snapshot.runtime_poll_paused);
+    button.textContent = paused ? "恢復輪詢" : "暫停輪詢";
+    button.disabled = Boolean(this._pollControlPending);
+    state.textContent = paused ? "已暫停" : "執行中";
+  }
+
   _render() {
     if (!this._latest) return;
     const sidebar = this.shadowRoot.querySelector("#sidebar");
@@ -230,7 +286,8 @@ class CoseligModbusMonitor extends HTMLElement {
     const coordinator = snapshot.coordinator || {};
     const stats = snapshot.statistics || {};
     this.shadowRoot.querySelector("#gateway-status").textContent = snapshot.connected ? "● 已連線" : "○ 已中斷";
-    this.shadowRoot.querySelector("#gateway-poll").textContent = snapshot.polling_paused ? "已暫停" : `${Number(snapshot.poll_interval ?? 0).toFixed(1)} 秒`;
+    this.shadowRoot.querySelector("#gateway-poll").textContent = Number(snapshot.poll_interval) === 0 ? "設定停用" : `${Number(snapshot.poll_interval ?? 0).toFixed(1)} 秒`;
+    this._renderPollControl(snapshot);
     this.shadowRoot.querySelector("#gateway-devices").textContent = `${coordinator.available_slaves ?? 0} / ${coordinator.configured_slaves ?? 0} 在線`;
     this.shadowRoot.querySelector("#gateway-last").textContent = `${Number(coordinator.last_poll_round_ms || 0).toFixed(1)} ms`;
     this.shadowRoot.querySelector("#gateway-average").textContent = `${Number(coordinator.average_poll_round_ms || 0).toFixed(1)} ms`;
