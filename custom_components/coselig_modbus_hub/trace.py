@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections import deque
 from dataclasses import asdict, dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 
@@ -24,6 +24,7 @@ class ProtocolTraceBuffer:
         if not 1 <= capacity <= 500:
             raise ValueError("Trace capacity must be 1..500")
         self._entries: deque[TraceEntry] = deque(maxlen=capacity)
+        self._last_timestamp: datetime | None = None
 
     def record(
         self,
@@ -33,9 +34,15 @@ class ProtocolTraceBuffer:
         source: str,
         latency_ms: float | None = None,
     ) -> None:
+        timestamp = datetime.now(UTC)
+        if self._last_timestamp is not None and timestamp <= self._last_timestamp:
+            # The frontend uses timestamp as a stable trace key. Preserve two
+            # identical rapid input events even if they arrive in one millisecond.
+            timestamp = self._last_timestamp + timedelta(milliseconds=1)
+        self._last_timestamp = timestamp
         self._entries.append(
             TraceEntry(
-                datetime.now(UTC).isoformat(timespec="milliseconds"),
+                timestamp.isoformat(timespec="milliseconds"),
                 direction,
                 raw.hex(" ").upper(),
                 source,
@@ -48,3 +55,4 @@ class ProtocolTraceBuffer:
 
     def clear(self) -> None:
         self._entries.clear()
+        self._last_timestamp = None

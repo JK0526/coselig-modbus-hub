@@ -135,8 +135,10 @@ async def test_initial_add_flow_has_summary_before_create_and_p404_default(flow)
         ) as scanner,
     ):
         result = await flow.async_step_user({"host": "test", "port": 502})
-        assert result["step_id"] == "scan_range"
+        assert result["step_id"] == "setup_devices"
+        assert result["menu_options"] == ["search_modbus", "add_s402"]
         scanner.assert_not_awaited()
+        assert (await flow.async_step_search_modbus())["step_id"] == "scan_range"
         result = await flow.async_step_scan_range({"scan_start": 51, "scan_end": 80})
         assert result["type"] == FlowResultType.SHOW_PROGRESS
         await flow._scan_task
@@ -169,6 +171,169 @@ async def test_initial_add_flow_has_summary_before_create_and_p404_default(flow)
             {"slave": 70, "model": "p404", "group_a": "single", "group_b": "cct"},
         ]
         assert result["version"] == 2 and result["minor_version"] == 1
+
+
+@pytest.mark.parametrize("device_id", [0, 255])
+async def test_initial_s402_flow_creates_s402_only_entry_without_scanning(
+    flow, device_id
+):
+    flow._gateway = {"host": "test", "port": 502}
+    result = await flow.async_step_setup_devices()
+    assert result["menu_options"] == ["search_modbus", "add_s402"]
+    with patch(
+        "custom_components.coselig_modbus_hub.config_flow.scan",
+        new=AsyncMock(side_effect=AssertionError("S402 setup must not scan")),
+    ) as scanner:
+        result = await flow.async_step_add_s402({"s402_id": device_id})
+        assert result["step_id"] == "s402_summary"
+        assert (
+            "Coselig S402 #" + str(device_id)
+            in result["description_placeholders"]["summary"]
+        )
+        assert "DI1：單擊事件" in result["description_placeholders"]["summary"]
+        assert flow._s402_ids == []
+        result = await flow.async_step_confirm_s402()
+        assert result["type"] == FlowResultType.CREATE_ENTRY
+        assert result["options"]["devices"] == []
+        assert result["options"]["s402_devices"] == [{"id": device_id}]
+        assert result["version"] == 2 and result["minor_version"] == 1
+        scanner.assert_not_awaited()
+
+
+@pytest.mark.parametrize(
+    "device_id,error",
+    [(-1, "invalid_s402_id"), (256, "invalid_s402_id"), ("bad", "invalid_s402_id")],
+)
+async def test_s402_id_form_rejects_invalid_range(flow, device_id, error):
+    result = await flow.async_step_add_s402({"s402_id": device_id})
+    assert result["errors"] == {"s402_id": error}
+
+
+async def test_s402_initial_cancel_never_creates_entry(flow):
+    flow._gateway = {"host": "test", "port": 502}
+    await flow.async_step_add_s402({"s402_id": 7})
+    assert (await flow.async_step_cancel_s402())["reason"] == "user_cancelled"
+
+
+async def test_add_s402_rejects_duplicate_id_and_existing_slave_one(
+    options, entry, hass
+):
+    original = {**entry.options, "s402_devices": [{"id": 7}]}
+    hass.config_entries.async_update_entry(entry, options=original)
+    await _options_ready(options)
+    assert options._s402_ids == [7]
+    assert (await options.async_step_add_s402({"s402_id": 7}))["errors"] == {
+        "s402_id": "duplicate_s402_id"
+    }
+    options._existing[1] = Device(1, Model.P404)
+    assert (await options.async_step_add_s402({"s402_id": 12}))["errors"] == {
+        "base": "reserved_slave_one"
+    }
+    assert entry.options == original
+
+
+async def test_s402_reserves_scanned_slave_one_but_allows_same_id_as_device(
+    options, entry, hass
+):
+    original = {**entry.options, "s402_devices": [{"id": 51}], "future_option": 9}
+    hass.config_entries.async_update_entry(entry, options=original)
+    await _options_ready(options)
+    options._found = [1, 51]
+    options._detections = {1: ScanResult(1), 51: ScanResult(51)}
+    result = await options.async_step_scan_result()
+    assert _choices(result, "devices") == [{"value": "51", "label": "Slave 51 · New"}]
+    assert "Slave #1 is reserved" in result["description_placeholders"]["reserved"]
+    rejected = await options.async_step_scan_result({"devices": ["1"]})
+    assert rejected["errors"] == {"base": "reserved_slave_one"}
+    options._working_devices = [Device(51, Model.P404)]
+    added = options._persist_add()["data"]
+    assert added["devices"][-1] == {
+        "slave": 51,
+        "model": "p404",
+        "group_a": "single",
+        "group_b": "single",
+    }
+    assert added["s402_devices"] == [{"id": 51}]
+    assert added["future_option"] == 9
+
+
+async def test_s402_options_add_remove_confirmation_and_unknown_option_preservation(
+    options, entry, hass
+):
+    original = {
+        **entry.options,
+        "devices": [],
+        "s402_devices": [{"id": 7, "future_device_field": "keep"}],
+        "future_option": {"keep": True},
+    }
+    hass.config_entries.async_update_entry(entry, options=original)
+    await _options_ready(options)
+    management = await options.async_step_s402_management()
+    assert management["menu_options"] == [
+        "add_s402",
+        "remove_s402",
+        "back_to_device_management",
+    ]
+    summary = await options.async_step_add_s402({"s402_id": 12})
+    assert summary["step_id"] == "s402_summary"
+    assert entry.options == original
+    added = await options.async_step_confirm_s402()
+    assert added["data"]["devices"] == original["devices"]
+    assert added["data"]["s402_devices"] == [
+        {"id": 7, "future_device_field": "keep"},
+        {"id": 12},
+    ]
+    assert added["data"]["future_option"] == {"keep": True}
+    assert added["data"]["poll_interval"] == original["poll_interval"]
+    assert added["data"]["scan_start"] == original["scan_start"]
+    assert added["data"]["scan_end"] == original["scan_end"]
+
+    hass.config_entries.async_update_entry(entry, options=added["data"])
+    await options.async_step_init()
+    result = await options.async_step_remove_s402({"devices": []})
+    assert result["errors"] == {"devices": "no_s402_to_remove"}
+    result = await options.async_step_remove_s402({"devices": ["7"]})
+    assert result["step_id"] == "s402_remove_summary"
+    assert entry.options == added["data"]
+    await options.async_step_cancel_s402_remove()
+    assert entry.options == added["data"]
+    await options.async_step_remove_s402({"devices": ["7"]})
+    removed = await options.async_step_confirm_s402_remove()
+    assert removed["data"]["s402_devices"] == [{"id": 12}]
+    assert removed["data"]["devices"] == original["devices"]
+    assert removed["data"]["future_option"] == {"keep": True}
+
+
+async def test_remove_s402_empty_state_has_return_menu(options):
+    await _options_ready(options)
+    result = await options.async_step_remove_s402()
+    assert result["menu_options"] == ["back_to_s402_management"]
+    assert (await options.async_step_back_to_s402_management())[
+        "step_id"
+    ] == "s402_management"
+
+
+async def test_s402_flows_handle_missing_pending_and_configured_list_safely(
+    flow, options, entry
+):
+    assert (await flow.async_step_back_to_device_management())[
+        "step_id"
+    ] == "setup_devices"
+    assert (await flow.async_step_s402_summary())["step_id"] == "add_s402"
+    assert (await flow.async_step_confirm_s402())["step_id"] == "add_s402"
+    assert (await options.async_step_cancel_s402())["step_id"] == "s402_management"
+    assert (await options.async_step_back_to_device_management())[
+        "step_id"
+    ] == "device_management"
+
+    await _options_ready(options)
+    options._s402_ids = [7]
+    result = await options.async_step_remove_s402()
+    assert result["step_id"] == "remove_s402"
+    assert _choices(result, "devices") == [{"value": "7", "label": "S402 #7"}]
+    result = await options.async_step_remove_s402({"devices": []})
+    assert result["errors"] == {"devices": "no_s402_to_remove"}
+    assert "s402_devices" not in entry.options
 
 
 async def test_initial_p210_can_be_selected_and_canceled_without_create(flow):
@@ -337,6 +502,7 @@ async def test_options_menus_and_add_only_new_with_confirmation(options, entry, 
         "add_devices",
         "edit_devices",
         "remove_devices",
+        "s402_management",
         "back_to_options",
     ]
     assert (await options.async_step_communication())["menu_options"] == [
@@ -622,6 +788,7 @@ async def test_native_options_save_after_explicit_add_confirmation(hass, entry):
             "add_devices",
             "edit_devices",
             "remove_devices",
+            "s402_management",
             "back_to_options",
         ]
         result = await hass.config_entries.options.async_configure(
@@ -702,8 +869,12 @@ async def test_native_initial_flow_creates_entry_only_after_summary_confirmation
         result = await hass.config_entries.flow.async_configure(
             flow_id, {"host": "gateway.local", "port": 502}
         )
-        assert result["step_id"] == "scan_range"
+        assert result["step_id"] == "setup_devices"
         scanner.assert_not_awaited()
+        result = await hass.config_entries.flow.async_configure(
+            flow_id, {"next_step_id": "search_modbus"}
+        )
+        assert result["step_id"] == "scan_range"
         result = await hass.config_entries.flow.async_configure(
             flow_id, {"scan_start": 1, "scan_end": 80}
         )
@@ -731,6 +902,47 @@ async def test_native_initial_flow_creates_entry_only_after_summary_confirmation
         assert result["version"] == 2 and result["minor_version"] == 1
 
 
+async def test_native_s402_only_initial_flow_creates_entry_after_confirm(hass):
+    with (
+        patch(
+            "custom_components.coselig_modbus_hub.config_flow.validate_gateway",
+            new=AsyncMock(return_value={"host": "gateway.local", "port": 502}),
+        ),
+        patch(
+            "custom_components.coselig_modbus_hub.config_flow.scan",
+            new=AsyncMock(side_effect=AssertionError("Must not scan S402-only bus")),
+        ) as scanner,
+        patch(
+            "custom_components.coselig_modbus_hub.async_setup_entry",
+            new=AsyncMock(return_value=True),
+        ),
+    ):
+        result = await hass.config_entries.flow.async_init(
+            DOMAIN, context={"source": "user"}
+        )
+        flow_id = result["flow_id"]
+        result = await hass.config_entries.flow.async_configure(
+            flow_id, {"host": "gateway.local", "port": 502}
+        )
+        assert result["step_id"] == "setup_devices"
+        result = await hass.config_entries.flow.async_configure(
+            flow_id, {"next_step_id": "add_s402"}
+        )
+        assert result["step_id"] == "add_s402"
+        result = await hass.config_entries.flow.async_configure(flow_id, {"s402_id": 7})
+        assert result["step_id"] == "s402_summary"
+        assert len(hass.config_entries.async_entries(DOMAIN)) == 0
+        result = await hass.config_entries.flow.async_configure(
+            flow_id, {"next_step_id": "confirm_s402"}
+        )
+        assert result["type"] == FlowResultType.CREATE_ENTRY
+        assert result["options"]["devices"] == []
+        assert result["options"]["s402_devices"] == [{"id": 7}]
+        assert result["minor_version"] == 1
+        assert len(hass.config_entries.async_entries(DOMAIN)) == 1
+        scanner.assert_not_awaited()
+
+
 async def test_native_cancel_during_add_scan_cancels_task_without_entry(hass):
     cancelled = asyncio.Event()
 
@@ -751,8 +963,12 @@ async def test_native_cancel_during_add_scan_cancels_task_without_entry(hass):
             DOMAIN, context={"source": "user"}
         )
         flow_id = result["flow_id"]
-        await hass.config_entries.flow.async_configure(
+        result = await hass.config_entries.flow.async_configure(
             flow_id, {"host": "gateway.local", "port": 502}
+        )
+        assert result["step_id"] == "setup_devices"
+        await hass.config_entries.flow.async_configure(
+            flow_id, {"next_step_id": "search_modbus"}
         )
         result = await hass.config_entries.flow.async_configure(
             flow_id, {"scan_start": 1, "scan_end": 247}

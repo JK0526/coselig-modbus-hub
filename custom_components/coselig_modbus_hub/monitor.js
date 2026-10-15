@@ -50,7 +50,7 @@ class CoseligModbusMonitor extends HTMLElement {
         .trace-panel{grid-area:trace;display:flex;flex-direction:column;min-height:0}.sidebar{grid-area:sidebar;display:grid;align-content:start;gap:10px;min-width:0;height:100%;min-height:0;overflow-y:auto;padding-right:2px}
         .trace-list{flex:1;min-height:0;overflow:auto;min-width:0}.trace-entry{display:grid;grid-template-columns:88px 78px minmax(0,1fr) 64px;gap:8px;align-items:start;padding:4px 6px;border:1px solid transparent;border-radius:5px;line-height:1.45;font:12px/1.45 var(--code-font-family,monospace);cursor:pointer}
         .trace-entry:hover{background:var(--secondary-background-color)}.trace-entry.selected{border-color:var(--primary-color);background:var(--secondary-background-color)}
-        .trace-time,.trace-latency{color:var(--secondary-text-color);white-space:nowrap}.trace-tx,.trace-raw-tx{color:#42a5f5}.trace-rx,.trace-ok,.trace-raw-rx{color:#66bb6a}.trace-timeout{color:#ffb74d}.trace-crc-error,.trace-error{color:#ef5350}
+        .trace-time,.trace-latency{color:var(--secondary-text-color);white-space:nowrap}.trace-tx,.trace-raw-tx{color:#42a5f5}.trace-rx,.trace-ok,.trace-raw-rx{color:#66bb6a}.trace-timeout{color:#ffb74d}.trace-crc-error,.trace-error{color:#ef5350}.trace-event,.trace-raw-event{color:#ba68c8}
         .trace-raw{display:block;min-width:0;overflow-x:auto;white-space:pre}.trace-status{white-space:pre}.trace-latency{text-align:right}
         .metric-grid{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:5px 10px;margin:0;font-size:13px}.metric-grid dt{color:var(--secondary-text-color)}.metric-grid dd{margin:0;text-align:right;font-variant-numeric:tabular-nums}
         .stats-grid{display:grid;grid-template-columns:1fr 1fr;gap:2px 12px}.stat{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:4px 2px;border-bottom:1px solid var(--divider-color)}.stat span{color:var(--secondary-text-color);font-size:12px}.stat strong{font-size:14px;font-variant-numeric:tabular-nums}
@@ -65,7 +65,7 @@ class CoseligModbusMonitor extends HTMLElement {
         <select id="gateway" aria-label="選擇閘道器"></select>
         <select id="slave-filter" aria-label="Slave 篩選"><option value="all">Slave：全部</option></select>
         <select id="type-filter" aria-label="方向與類型篩選">
-          <option value="all">類型：全部</option><option value="TX">TX</option><option value="RX">RX</option><option value="OK">OK</option><option value="Error">錯誤</option>
+          <option value="all">類型：全部</option><option value="TX">TX</option><option value="RX">RX</option><option value="OK">OK</option><option value="EVENT">事件</option><option value="Error">錯誤</option>
         </select>
         <button id="clear">清除封包</button><button id="pause">暫停畫面</button>
         <label><input id="auto-scroll" type="checkbox" checked>自動捲動</label>
@@ -246,7 +246,7 @@ class CoseligModbusMonitor extends HTMLElement {
     this._renderDevices(snapshot.devices || []);
     this._renderTrace({ preserveAnchor: true });
     const selected = this._transactions.find((transaction) => transaction.key === this._selectedTransactionKey);
-    this._renderDecoder(selected || null);
+    this._renderDecoder(selected || null, snapshot.devices || [], snapshot.s402_devices || []);
     if (sidebar.scrollTop !== sidebarScrollTop) sidebar.scrollTop = sidebarScrollTop;
   }
 
@@ -306,6 +306,7 @@ class CoseligModbusMonitor extends HTMLElement {
         if (typeFilter === "TX" && status !== "TX") continue;
         if (typeFilter === "RX" && status !== "RX") continue;
         if (typeFilter === "OK" && status !== "OK") continue;
+        if (typeFilter === "EVENT" && status !== "EVENT") continue;
         if (typeFilter === "Error" && !["TIMEOUT", "CRC ERROR", "ERROR"].includes(status)) continue;
         const date = new Date(entry.timestamp);
         const time = `${date.toLocaleTimeString(this._hass?.language || "zh-TW", { hour12: false })}.${String(date.getMilliseconds()).padStart(3, "0")}`;
@@ -317,12 +318,12 @@ class CoseligModbusMonitor extends HTMLElement {
         row.onclick = () => {
           this._selectedTransactionKey = transaction.key;
           this._renderTrace({ preserveAnchor: true });
-          this._renderDecoder(transaction, devices);
+          this._renderDecoder(transaction, devices, this._latest?.s402_devices || []);
           this._scrollDecoderIntoViewIfNeeded();
         };
         const timestamp = document.createElement("span"); timestamp.className = "trace-time"; timestamp.textContent = time;
         const direction = document.createElement("span"); direction.className = `trace-status trace-${classKey}`; direction.textContent = status.padEnd(9);
-        const raw = document.createElement("span"); raw.className = `trace-raw${status === "TX" || status === "RX" ? ` trace-raw-${status.toLowerCase()}` : ""}`; raw.textContent = entry.raw_hex || "";
+        const raw = document.createElement("span"); raw.className = `trace-raw${["TX", "RX", "EVENT"].includes(status) ? ` trace-raw-${status.toLowerCase()}` : ""}`; raw.textContent = entry.raw_hex || "";
         row.append(timestamp, direction, raw);
         if (entry.latency_ms != null) { const latency = document.createElement("span"); latency.className = "trace-latency"; latency.textContent = `${Number(entry.latency_ms).toFixed(1)} ms`; row.append(latency); }
         list.append(row);
@@ -374,12 +375,16 @@ class CoseligModbusMonitor extends HTMLElement {
     list.scrollTop = Math.max(0, list.scrollTop + rowTop - viewportTop - desiredOffset);
   }
 
-  _renderDecoder(transaction, devices = this._latest?.devices || []) {
+  _renderDecoder(
+    transaction,
+    devices = this._latest?.devices || [],
+    s402Devices = this._latest?.s402_devices || [],
+  ) {
     const decoder = this.shadowRoot.querySelector("#decoder");
     decoder.replaceChildren();
     if (!transaction) { const empty = document.createElement("dd"); empty.className = "empty"; empty.textContent = "選取一筆 Trace 以檢視封包。"; decoder.append(empty); return; }
     const device = devices.find((item) => item.slave === transaction.slave) || null;
-    for (const [label, value] of CoseligModbusMonitor.decodeTransaction(transaction, device)) {
+    for (const [label, value] of CoseligModbusMonitor.decodeTransaction(transaction, device, s402Devices)) {
       const dt = document.createElement("dt"); dt.textContent = label;
       const dd = document.createElement("dd"); dd.textContent = value;
       decoder.append(dt, dd);
@@ -408,7 +413,12 @@ class CoseligModbusMonitor extends HTMLElement {
     const transactions = [];
     let current = null;
     for (const entry of entries) {
-      if (String(entry.direction).toUpperCase() === "TX") {
+      const direction = String(entry.direction).toUpperCase();
+      if (direction === "EVENT") {
+        transactions.push({ tx: null, rx: null, statuses: [entry], entries: [entry], slave: null });
+        continue;
+      }
+      if (direction === "TX") {
         current = { tx: entry, rx: null, statuses: [], entries: [entry], slave: this.parseHex(entry.raw_hex)[0] ?? null };
         transactions.push(current);
       } else {
@@ -539,7 +549,24 @@ class CoseligModbusMonitor extends HTMLElement {
     return result;
   }
 
-  static decodeTransaction(transaction, device = null) {
+  static decodeTransaction(transaction, device = null, s402Devices = []) {
+    const eventTrace = transaction.entries.find((entry) => String(entry.direction).toUpperCase() === "EVENT");
+    if (eventTrace) {
+      const bytes = this.parseHex(eventTrace.raw_hex);
+      const deviceId = bytes.length > 4 ? bytes[4] : null;
+      const di = bytes.length > 5 ? ({ 1: 1, 2: 2, 4: 3, 8: 4 })[bytes[5]] : null;
+      const configuredIds = new Set((s402Devices || []).map((item) => Number(item.id)));
+      const configured = deviceId != null && configuredIds.has(deviceId);
+      return [
+        ["Type", "S402 Event"],
+        ["Device", deviceId == null ? "S402" : `S402 #${deviceId}${configured ? "" : "（未設定）"}`],
+        ["S402 ID", deviceId == null ? "—" : String(deviceId)],
+        ["Input", di == null ? "Invalid DI" : `DI${di}`],
+        ["Action", "單擊"],
+        ["Event", "PRESS_END"],
+        ["Configured", configured ? "是" : "否"],
+      ];
+    }
     const devices = device ? [device] : [];
     const fields = [];
     const request = this.parseHex(transaction.tx?.raw_hex);

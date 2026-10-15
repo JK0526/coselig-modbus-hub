@@ -46,6 +46,7 @@ class Gateway:
     handlers: set = field(default_factory=set)
     writers: set = field(default_factory=set)
     arrived: asyncio.Event = field(default_factory=asyncio.Event)
+    connected_event: asyncio.Event = field(default_factory=asyncio.Event)
     release: asyncio.Event = field(default_factory=asyncio.Event)
     block: bool = False
 
@@ -54,6 +55,7 @@ class Gateway:
         self.handlers.add(task)
         self.writers.add(writer)
         self.connections += 1
+        self.connected_event.set()
         try:
             while True:
                 request = await reader.readexactly(8)

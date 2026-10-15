@@ -195,7 +195,9 @@ class Coordinator(DataUpdateCoordinator[dict[int, DeviceState]]):
                         state.available = (
                             state.populated and state.consecutive_failures < 3
                         )
-                    self.async_set_updated_data(self.states)
+                # Event-only entities depend on gateway health even when there
+                # are no pollable devices or polling is paused.
+                self.async_set_updated_data(self.states)
             if self.polling_paused:
                 await self._wait_for_schedule()
                 continue

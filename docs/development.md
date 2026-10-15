@@ -1,6 +1,6 @@
-# v1.3.3 開發與維護指南
+# v1.4.0-beta.1 開發與維護指南
 
-更新：2026-10-15。本文描述目前 v1.3.3 架構、Runtime 行為、維護界線與可重現驗證方式。使用者操作請看 [README](../README.md)；版本差異以 [GitHub Releases](https://github.com/JK0526/coselig-modbus-hub/releases) 與各版 Release Notes 為準。歷史問題盤點保留在 `docs/specs/`，不作新版規範。
+更新：2026-10-15。本文描述 v1.4.0-beta.1 架構、Runtime 行為、維護界線與可重現驗證方式。S402 與既有 Poll／Control 的硬體共存仍待驗收。使用者操作請看 [README](../README.md)；版本差異以 [GitHub Releases](https://github.com/JK0526/coselig-modbus-hub/releases) 與各版 Release Notes 為準。歷史問題盤點保留在 `docs/specs/`，不作新版規範。
 
 ## 架構與模組責任
 
@@ -11,21 +11,23 @@
 | `models.py` | Device／Model／GroupMode、序列化與亮度／色溫轉換 |
 | `profiles.py` | DeviceProfile、register map、PollSpec、OutputSpec、dimmer codec 與 family probe |
 | `protocol.py` | CRC16、通用 FC01～FC06、例外回覆、echo 驗證、ADU 解析 |
-| `transport.py` | 一條 TCP socket／worker、單筆在途請求、控制優先、bounded queue 與交易統計 |
+| `transport.py` | 一條 TCP socket、序列化 TX worker、唯一 Continuous RX reader、pending response Future、控制優先、bounded queue 與交易統計 |
 | `scanner.py` | 獨佔 bus 搜尋、Slave discovery 與 family probe |
 | `coordinator.py` | 輪詢週期、設備狀態 cache、availability、failure threshold 與 reconnect |
 | `hub.py` | 組合 Transport／Coordinator，管理啟停與掃描 |
 | `light.py`／`switch.py` | 原生 HA entity、optimistic state、FC06／FC05 控制 |
+| `event.py` | 每顆 S402 的四個原生 EventEntity 與 Gateway availability |
+| `s402.py` | S402 unsolicited frame signature、CRC／DI parser 與 options ID validation |
 | `config_flow.py` | 初始設定、搜尋範圍、Options intents、Reconfigure |
 | `__init__.py` | Config Entry runtime_data、平台生命週期與 registry 差異清理 |
 | `diagnostics.py` | 遮罩 Host 的 runtime diagnostics |
-| `trace.py`／`monitor.py`／`monitor.js` | 記憶體 trace、管理員 WebSocket API 與唯讀前端 |
+| `trace.py`／`monitor.py`／`monitor.js` | 記憶體 trace、管理員 WebSocket API、EVENT routing 與唯讀前端 |
 
 正式整合只有一套 runtime；不使用 MQTT、自訂 Entity Registry、資料庫、外部 Modbus packet library 或第二套 Gateway worker。
 
 ## Device Profiles 與 Modbus Protocol
 
-`DeviceProfile` 集中定義設備能力，Coordinator 依 `PollSpec` 讀取，Entity 平台依 `OutputSpec` 建立 Light／Switch。設備能力基線：
+`DeviceProfile` 集中定義 pollable／controllable 設備能力，Coordinator 依 `PollSpec` 讀取，Entity 平台依 `OutputSpec` 建立 Light／Switch。S402 不屬於 `Model` 或 `DeviceProfile`：它不 poll、不 control、不 read-back，只由 Transport 收取非請求事件。設備能力基線：
 
 | Model | Runtime Poll | Outputs |
 | --- | --- | --- |
@@ -43,7 +45,7 @@ Transport 收送 RTU frame over TCP，不使用 MBAP。通用 protocol layer 支
 
 `TimeoutError` 同時屬於 `OSError`，Transport 必須先分類 timeout，再分類 TCP socket error，避免把 Slave transaction timeout 誤判為 Gateway disconnect。CRC 使用獨立 error；錯 Slave、錯 Function 與 device exception 不計入 CRC failure。
 
-Scanner 不替 P404／P210 猜測型號，型號由使用者確認。探測流程依序為：
+Scanner 不替 P404／P210 猜測型號，型號由使用者確認。若 Entry 已設定 S402，Slave #1 仍可被 scanner probe，但 Config Flow 將其標為保留衝突並拒絕加入。普通 Slave #1 已設定時，新增 S402 會被拒絕。S402 ID 與 Modbus Slave 位址分屬不同 namespace，因此 S402 #51 可與 P404 Slave #51 共存。探測流程依序為：
 
 1. Common discovery：FC03，start 0，count 1。
 2. Dimmer family probe：FC03，start `0x082A`，count 2。
@@ -54,6 +56,12 @@ Scanner 不替 P404／P210 猜測型號，型號由使用者確認。探測流�
 ## Runtime、Polling 與控制順序
 
 每個 Transport 使用一條 TCP socket 與一個 worker，同時間最多一筆在途請求。控制請求優先於 Poll。控制 queue 有界為 32；相同邏輯 key 的 pending command 使用 latest-wins，新 command 取代尚未執行的舊命令並回報 superseded。已送出的 ADU 不會撤回。Coordinator 逐 Slave 發送並等待單筆 poll，不建立 poll backlog。
+
+Transport 啟動後另建立一個長期 RX task，這是該 socket 唯一呼叫 `protocol.receive()` 的地方；TX worker 不讀 StreamReader。每個 `_exchange()` 在寫 request 前建立唯一 pending response Future，再寫入並等待原始 timeout。RX task 讀完整 RTU frame 後先檢查保留 signature `01 06 01 A0`：signature candidate 永遠消耗並交給 pure S402 parser，絕不完成普通 pending Future；有效且已設定 ID 的事件交給 Hub listener，unknown ID 只保留 EVENT trace。其他 frame 才交給 pending Future，原 `_exchange()` 接著呼叫既有 `validate(request, response)`。插入任意數量 S402 event 都不 await automation、不重置 request timeout，也不增加 Modbus request counters。
+
+S402 frame 的 DI byte 只接受 bit `01`／`02`／`04`／`08`，映射 DI1–DI4；CRC 與 frame length 必須完整有效。signature candidate 中 CRC／DI invalid 的封包被消耗並寫 debug log，不會觸發 HA event，也不會污染 CRC request counter。S402 ID 使用 byte 4 的完整 uint8 範圍 0–255；本 repo 現有 source docs、`docs/specs/` 與 tests 沒有更窄 ID 範圍，故沒有套用一般 Modbus Slave 1–247 限制。
+
+RX EOF／socket error 只把 Transport 狀態標為 disconnected 並呼叫已註冊的 loss callback；Hub 將通知交給 Coordinator。Reconnect/backoff 仍只有 Coordinator 負責。Intentional `disconnect()`／`close()` 會先標記 teardown，再停止 RX task 並清理 pending Future，不觸發 loss callback。Gateway 重連後 Coordinator 一定發布一次更新，即使 devices 為空或 Polling=0，讓 S402 EventEntity availability 即時恢復。
 
 Scheduler 以 bus round 的開始時間計算目標週期；當一輪超過 interval 時立即開始後續工作，不補排積欠的 timer/task。poll request 記錄 monotonic start time。Entity 收到較新的使用者操作後，會忽略操作前已啟動的 poll response，避免舊資料覆寫 optimistic state；後續正常 poll 再校正真實狀態。
 
@@ -67,13 +75,15 @@ Poll interval 的合法值為 0 或至少 0.5 秒。Polling=0 停止背景 sched
 
 ## Config Entry 與 HA Registry
 
-Config Entry data 僅保存 `host`／`port`；options 保存 `poll_interval`、`scan_start`、`scan_end` 與 `devices[]`。schema 維持 version 2、minor version 1；舊 schema 不自動猜測遷移。P404 保存兩個 group mode，P210 只保存 `group_a`，R410 不保存 Group。舊 P210 設定缺少 `group_a` 時由 `Device.from_dict()` 預設為 `single`。
+Config Entry data 僅保存 `host`／`port`；options 保存 `poll_interval`、`scan_start`、`scan_end`、`devices[]` 與相容選填的 `s402_devices: [{"id": 7}]`。缺少該欄位視為空清單；schema 維持 version 2、minor version 1，沒有 migration。S402 ID 必須在 0–255 且同一 Entry 不重複，與 `devices[].slave` 不共用 namespace。P404 保存兩個 group mode，P210 只保存 `group_a`，R410 不保存 Group。舊 P210 設定缺少 `group_a` 時由 `Device.from_dict()` 預設為 `single`。
 
 Config／Options Flow 使用 Home Assistant native menu／form；新增、修改、移除 pending state 留在 Flow instance，只有明確確認頁才呼叫 `async_create_entry`。新增 selector 只接受本次找到的 New Slave；Existing／Missing 不會被新增流程改寫。Edit 一次修改一台；Remove 為獨立多選流程。確認後以既有 options 為底，只更新 `devices`，保留輪詢、搜尋範圍與未知欄位。
 
 Options 使用 `OptionsFlowWithReload`；輪詢週期 step 設 `automatic_reload=False`，直接更新 runtime 並喚醒 scheduler，不使用 options update listener 或第二次 reload。Reconfigure 使用 `async_update_reload_and_abort`；先測試新 Gateway，成功才替換 Host／Port，保留 Entry ID 與 registry identity。
 
-每個 Slave 有一個 Parent Device；有效輸出使用 Child Device。Native Entity 設 `has_entity_name=True`。Parent identifier 由 Entry ID 與 Slave 組成，Entity unique_id 使用 `{entry_id}_slave_{slave}_chN`、`_group_a`、`_group_b` 或 relay key；不包含 Gateway IP、display name 或 entity_id。Child 的 identifier 沿用 entity unique_id；parent_device_id 指向 HA 真正的 Parent Device Registry ID，不用 `via_device_id` 表示邏輯輸出。
+每個 Slave 有一個 Parent Device；有效輸出使用 Child Device。每顆 S402 是一個 Parent Device `Coselig S402 #<id>`，含 4 個 `has_entity_name=True` EventEntity，unique_id 為 `{entry_id}_s402_<id>_di1` 至 `_di4`；四個 Entity 共用同一 Parent，不建立 Child。Native Entity 設 `has_entity_name=True`。Modbus Parent identifier 由 Entry ID 與 Slave 組成，Entity unique_id 使用 `{entry_id}_slave_{slave}_chN`、`_group_a`、`_group_b` 或 relay key；不包含 Gateway IP、display name 或 entity_id。Child 的 identifier 沿用 entity unique_id；parent_device_id 指向 HA 真正的 Parent Device Registry ID，不用 `via_device_id` 表示邏輯輸出。
+
+S402 `EventEntity` 使用 `EventDeviceClass.BUTTON` 與 `ButtonEventType.PRESS_END`。它沒有 per-device poll health；availability 僅依 Coordinator Gateway connection。`async_added_to_hass()` 註冊該 ID／DI listener，`async_on_remove()` 解除；事件呼叫 `_trigger_event()` 後寫 HA state。每次 reload 會建立新的 Hub／Entity listener set，舊 Entity unload 時移除 subscription。
 
 Setup 依 profiles 計算目前有效 unique_id，只移除同 Entry／本整合不再提供的舊輸出。存續 Entity Registry entry 不重建、不改 user name、entity_id、Area 或 automation reference。Group mode 切換只移除受影響 outputs；另一 Group 的 entity 與 metadata 保留。使用者可在 HA 原生 Entity Registry 為各輸出分別指定 Area。整合不設定 suggested_area、不建立 Area 欄位或 mapping database，也不覆寫 Registry Area。已移除 output 若日後重建，HA 不保證還原被刪除 registry item 的 metadata。
 
@@ -83,7 +93,7 @@ Device Registry 移除使用 Home Assistant 2026.10 原生 `async_remove_device`
 
 ## Diagnostics 與多 Gateway 隔離
 
-Diagnostics 只輸出 runtime snapshot；Host／IP 遮罩，不包含密碼、trace history 或其他 HA Device。統計為記憶體計數，restart／reload 歸零。Coordinator round time 從取得輪詢 lock、第一個 configured Slave 開始至本輪最後一個完成；不含輪間等待與掃描 lock 等待。Average 僅取最近 20 輪。不自動調整 polling interval，也不依失聯 Slave 降頻。
+Diagnostics 只輸出 runtime snapshot；Host／IP 遮罩，可列出 configured S402 IDs，但不包含 packet history、last press history、密碼或其他 HA Device。統計為記憶體計數，restart／reload 歸零。Coordinator round time 從取得輪詢 lock、第一個 configured Slave 開始至本輪最後一個完成；不含輪間等待與掃描 lock 等待。Average 僅取最近 20 輪。不自動調整 polling interval，也不依失聯 Slave 降頻。
 
 Diagnostics 不建立 sensors，不提供可持久化 Trace 或其他裝置資料。Log 只在狀態改變或 queue full 時輸出 warning；逐次通訊細節留在 DEBUG。不因暫時網路異常建立 Repair。
 
@@ -95,7 +105,7 @@ Monitor 僅供管理員使用，WebSocket command 僅有 list／subscribe／clea
 
 Browser page 的 in-memory history 上限為 1000 entries。Entry stable key 由 timestamp、direction、raw hex、source 與 latency 組成；snapshot merge 先去重，再按 timestamp 排序並保留上限內最新資料。Gateway 切換、Clear 或 page reload 會清空 local history；Clear 同時清 backend trace，保留 Transport statistics。Pause 凍結 render 但仍 ingest snapshot。
 
-Transaction 由 raw entries 分組，stable key 使用交易 TX entry key；孤立狀態則使用該組第一筆 entry key，因此新 entries 插入時選取不依賴 array index。Auto-scroll OFF 會以目前可見 row key 與 viewport offset 保留閱讀位置；原 row 被裁切時用後續 timestamp 定位，沒有後續資料則回到最舊可見 row。重新開啟 Auto-scroll 才回到最新 row。
+Transaction 由 raw entries 分組，stable key 使用交易 TX entry key；孤立狀態則使用該組第一筆 entry key。EVENT 每筆永遠是 standalone trace row，且不清除前一個 TX transaction 的 grouping pointer，因此 `TX → EVENT → RX → OK` 仍是 Poll transaction 加一個獨立 EVENT。EVENT decoder 依 source semantics 解讀 S402 ID／DI／single click／PRESS_END／configured 狀態，不套普通 Slave #1 FC06 decoder。Trace timestamp 在同一毫秒內單調遞增，避免相同 DI 的快速重複事件被前端 stable-key merge 去重。Auto-scroll OFF 會以目前可見 row key 與 viewport offset 保留閱讀位置；原 row 被裁切時用後續 timestamp 定位，沒有後續資料則回到最舊可見 row。重新開啟 Auto-scroll 才回到最新 row。
 
 Sidebar 使用單一主要垂直 scroll context；Decoder 卡片在 normal flow，desktop 內容高度上限為 `min(38vh, 360px)` 並可內部捲動。只有使用者 click Trace row 且 Decoder 超出 Sidebar viewport 時，才呼叫 smooth `scrollIntoView`。Snapshot refresh 會保留 Sidebar scrollTop；filter、pause/resume 不會主動捲動。窄螢幕改為 Sidebar 在 Trace 上方的自然單欄，不對整頁強制 scrollIntoView。Device Health 清單固定最高 240px；通訊統計值直接呈現既有 Transport counters。Caption「自本次啟動起累計」只是文案，沒有 runtime duration／uptime 欄位。
 
@@ -105,6 +115,8 @@ Sidebar 使用單一主要垂直 scroll context；Decoder 卡片在 normal flow�
 
 開發依賴由 `pyproject.toml`／`uv.lock` 固定。基準環境：Home Assistant **2026.10.1**、Python **3.14.7**、pytest-homeassistant-custom-component **0.13.372**。v1.3.3 基線：**440 Python tests、36 frontend tests、99.57% branch coverage**；Config Flow line／branch coverage 要求 100%。
 
+v1.4.0-beta.1 自動驗證結果：**512 Python tests、38 frontend tests、99.95% branch coverage、Config Flow line／branch coverage 100%**。S402 實機與既有 Poll／Control 共存仍是 Pending，這些自動測試不代表硬體驗收通過。
+
 本機檢查命令：
 
 ```sh
@@ -112,7 +124,7 @@ uv sync --locked --python 3.14
 uv run ruff check custom_components tests
 uv run ruff format --check custom_components tests
 uv lock --check
-uv run pytest --timeout=30 --cov-fail-under=99
+uv run pytest --timeout=30 --cov-fail-under=99.5
 node --test tests/frontend/monitor.test.cjs
 ```
 

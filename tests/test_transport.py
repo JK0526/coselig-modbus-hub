@@ -1,4 +1,5 @@
 import asyncio
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 
@@ -6,7 +7,11 @@ from custom_components.coselig_modbus_hub.protocol import (
     CRCError,
     DeviceException,
     ProtocolError,
+    frame,
+    read_holding_registers,
 )
+from custom_components.coselig_modbus_hub.s402 import S402Event
+from custom_components.coselig_modbus_hub.trace import ProtocolTraceBuffer
 from custom_components.coselig_modbus_hub.transport import (
     GatewayError,
     OfflineError,
@@ -166,4 +171,432 @@ async def test_connect_error(socket_enabled):
     transport = Transport("127.0.0.1", 1)
     with pytest.raises(GatewayError):
         await transport.connect()
+    await transport.close()
+
+
+def _s402_packet(device_id=7, di_bit=1):
+    return frame(bytes([1, 6, 1, 0xA0, device_id, di_bit]))
+
+
+async def _push(gateway, data):
+    await gateway.connected_event.wait()
+    writer = next(iter(gateway.writers))
+    writer.write(data)
+    await writer.drain()
+    return writer
+
+
+async def test_idle_s402_event_is_received_without_a_request(gateway):
+    events = []
+    transport = Transport("127.0.0.1", gateway.port, on_s402_event=events.append)
+    try:
+        await transport.connect()
+        arrived = asyncio.Event()
+        transport.on_s402_event = lambda event: (events.append(event), arrived.set())
+        await _push(gateway, _s402_packet(7, 8))
+        await asyncio.wait_for(arrived.wait(), 1)
+        assert events == [S402Event(7, 4)]
+        assert transport.statistics.successful_requests == 0
+        assert transport.statistics.failed_requests == 0
+        assert transport.trace is None
+    finally:
+        await transport.close()
+
+
+async def test_s402_event_between_tx_and_response_does_not_steal_response(
+    gateway, transport
+):
+    gateway.block = True
+    received = asyncio.Event()
+    events = []
+    transport.on_s402_event = lambda event: (events.append(event), received.set())
+    request = asyncio.create_task(transport.submit(read(51, 2), poll=True))
+    await gateway.arrived.wait()
+    await _push(gateway, _s402_packet(7, 1))
+    await asyncio.wait_for(received.wait(), 1)
+    gateway.release.set()
+    response = await request
+    assert response[0:2] == bytes([51, 3])
+    assert events == [S402Event(7, 1)]
+    assert transport.statistics.successful_requests == 1
+
+
+async def test_multiple_s402_events_before_pending_response_keep_order(
+    gateway, transport
+):
+    gateway.block = True
+    events = []
+    received = asyncio.Event()
+
+    def on_event(event):
+        events.append(event)
+        if len(events) == 4:
+            received.set()
+
+    transport.on_s402_event = on_event
+    request = asyncio.create_task(transport.submit(read(51, 2), poll=True))
+    await gateway.arrived.wait()
+    await _push(gateway, b"".join(_s402_packet(7, bit) for bit in (1, 2, 4, 8)))
+    await asyncio.wait_for(received.wait(), 1)
+    gateway.release.set()
+    await request
+    assert events == [S402Event(7, di) for di in range(1, 5)]
+
+
+async def test_s402_event_after_response_is_still_received(gateway, transport):
+    events = []
+    arrived = asyncio.Event()
+    transport.on_s402_event = lambda event: (events.append(event), arrived.set())
+    assert await transport.submit(read(51, 2), poll=True)
+    await _push(gateway, _s402_packet(7, 2))
+    await asyncio.wait_for(arrived.wait(), 1)
+    assert events == [S402Event(7, 2)]
+
+
+@pytest.mark.parametrize("invalid", ["crc", "di"])
+async def test_invalid_s402_candidate_is_consumed_without_request_counters(
+    gateway, transport, invalid
+):
+    gateway.block = True
+    packet = bytearray(_s402_packet(7, 1))
+    if invalid == "crc":
+        packet[-1] ^= 0xFF
+    else:
+        packet[5] = 0x10
+        packet[-2:] = frame(bytes(packet[:-2]))[-2:]
+    events = []
+    transport.on_s402_event = events.append
+    request = asyncio.create_task(transport.submit(read(51, 2), poll=True))
+    await gateway.arrived.wait()
+    await _push(gateway, bytes(packet))
+    await asyncio.sleep(0)
+    gateway.release.set()
+    assert await request
+    assert not events
+    assert transport.statistics.successful_requests == 1
+    assert transport.statistics.failed_requests == 0
+    assert transport.statistics.crc_error_count == 0
+
+
+async def test_s402_frame_can_be_fragmented_across_tcp_chunks(gateway, transport):
+    events = []
+    arrived = asyncio.Event()
+    transport.on_s402_event = lambda event: (events.append(event), arrived.set())
+    await transport.connect()
+    writer = await _push(gateway, _s402_packet(255, 8)[:3])
+    await asyncio.sleep(0.01)
+    writer.write(_s402_packet(255, 8)[3:])
+    await writer.drain()
+    await asyncio.wait_for(arrived.wait(), 1)
+    assert events == [S402Event(255, 4)]
+
+
+async def test_event_and_normal_response_coalesced_in_one_tcp_write(socket_enabled):
+    events = []
+    connected = asyncio.Event()
+
+    async def handler(reader, writer):
+        connected.set()
+        request = await reader.readexactly(8)
+        writer.write(_s402_packet(12, 8) + frame(bytes([request[0], 3, 2, 0, 42])))
+        await writer.drain()
+        await reader.read()
+        writer.close()
+        await writer.wait_closed()
+
+    server = await asyncio.start_server(handler, "127.0.0.1", 0)
+    port = server.sockets[0].getsockname()[1]
+    transport = Transport("127.0.0.1", port, on_s402_event=events.append)
+    try:
+        request = asyncio.create_task(
+            transport.submit(read_holding_registers(51, 0x082A, 1), poll=True)
+        )
+        await connected.wait()
+        response = await request
+        assert response[0:2] == bytes([51, 3])
+        assert events == [S402Event(12, 4)]
+    finally:
+        await transport.close()
+        server.close()
+        await server.wait_closed()
+
+
+async def test_s402_events_do_not_extend_original_request_timeout(gateway):
+    transport = Transport("127.0.0.1", gateway.port, timeout=0.08)
+    gateway.block = True
+    event_received = asyncio.Event()
+    transport.on_s402_event = lambda _event: event_received.set()
+    try:
+        started = asyncio.get_running_loop().time()
+        request = asyncio.create_task(transport.submit(read(51, 2), poll=True))
+        await gateway.arrived.wait()
+        await asyncio.sleep(0.05)
+        await _push(gateway, _s402_packet())
+        await asyncio.wait_for(event_received.wait(), 1)
+        with pytest.raises(TimeoutError):
+            await request
+        elapsed = asyncio.get_running_loop().time() - started
+        assert 0.07 <= elapsed < 0.12
+        assert transport.statistics.timeout_count == 1
+    finally:
+        await transport.close()
+
+
+async def test_idle_eof_notifies_loss_once_and_disconnect_is_intentional(gateway):
+    losses = []
+    transport = Transport(
+        "127.0.0.1", gateway.port, on_connection_lost=lambda: losses.append(True)
+    )
+    await transport.connect()
+    await gateway.connected_event.wait()
+    writer = next(iter(gateway.writers))
+    writer.close()
+    await writer.wait_closed()
+    for _ in range(20):
+        if losses:
+            break
+        await asyncio.sleep(0)
+    assert losses == [True]
+    await transport.disconnect()
+    assert losses == [True]
+    await transport.close()
+
+
+async def test_reconnect_creates_one_reader_and_disconnect_cleans_it(gateway):
+    losses = []
+    transport = Transport(
+        "127.0.0.1", gateway.port, on_connection_lost=lambda: losses.append(True)
+    )
+    await transport.connect()
+    first = transport._reader_task
+    assert first is not None and not first.done()
+    await transport.disconnect()
+    assert first.done()
+    assert not losses
+    await transport.connect()
+    second = transport._reader_task
+    assert second is not None and second is not first and not second.done()
+    assert (
+        sum(
+            task.get_name() == "coselig-rx" and not task.done()
+            for task in asyncio.all_tasks()
+        )
+        == 1
+    )
+    await transport.close()
+    assert second.done()
+
+
+async def test_close_cancels_reader_worker_and_pending_future(gateway):
+    gateway.block = True
+    transport = Transport("127.0.0.1", gateway.port, timeout=1)
+    request = asyncio.create_task(transport.submit(read(51, 2), poll=True))
+    await gateway.arrived.wait()
+    reader_task = transport._reader_task
+    worker_task = transport._worker
+    pending_future = transport._pending_response
+    await transport.close()
+    result = await asyncio.gather(request, return_exceptions=True)
+    assert isinstance(result[0], asyncio.CancelledError)
+    assert reader_task is not None and reader_task.done()
+    assert worker_task is not None and worker_task.done()
+    assert pending_future is not None and pending_future.cancelled()
+    assert transport._reader is None and transport._writer is None
+
+
+@pytest.mark.parametrize("close_error", [OSError("closed"), TimeoutError()])
+async def test_disconnect_completes_pending_and_tolerates_writer_close_error(
+    close_error,
+):
+    transport = Transport("gateway", 502)
+    writer = Mock()
+    writer.close = Mock()
+    writer.wait_closed = AsyncMock(side_effect=close_error)
+    transport._writer = writer
+    pending = asyncio.get_running_loop().create_future()
+    transport._pending_response = pending
+
+    await transport.disconnect()
+
+    with pytest.raises(GatewayError, match="disconnected"):
+        await pending
+    writer.close.assert_called_once()
+    assert transport._writer is None
+    assert not transport._disconnecting
+
+
+async def test_idle_normal_frames_and_frames_after_pending_completion_are_consumed(
+    gateway,
+):
+    trace = ProtocolTraceBuffer()
+    transport = Transport("127.0.0.1", gateway.port, trace=trace)
+    try:
+        await transport.connect()
+        response = frame(bytes([51, 3, 2, 0, 1]))
+        await _push(gateway, response)
+        await asyncio.sleep(0.01)
+        completed = asyncio.get_running_loop().create_future()
+        completed.set_result(b"already handled")
+        transport._pending_response = completed
+        await _push(gateway, response)
+        await asyncio.sleep(0.01)
+        assert trace.snapshot() == []
+        assert transport.statistics.successful_requests == 0
+        assert completed.result() == b"already handled"
+    finally:
+        transport._pending_response = None
+        await transport.close()
+
+
+@pytest.mark.parametrize("callback_mode", ["none", "raises"])
+async def test_s402_callback_is_optional_and_listener_errors_are_isolated(
+    gateway, callback_mode
+):
+    arrived = asyncio.Event()
+    transport = Transport("127.0.0.1", gateway.port)
+    if callback_mode == "raises":
+
+        def fail(_event):
+            arrived.set()
+            raise RuntimeError("listener error")
+
+        transport.on_s402_event = fail
+    try:
+        await transport.connect()
+        await _push(gateway, _s402_packet(4, 1))
+        if callback_mode == "raises":
+            await asyncio.wait_for(arrived.wait(), 1)
+        else:
+            await asyncio.sleep(0.01)
+        assert transport.connected
+        assert transport.statistics.successful_requests == 0
+        assert transport.statistics.failed_requests == 0
+    finally:
+        await transport.close()
+
+
+async def test_protocol_framing_error_is_delivered_to_pending_request(gateway):
+    transport = Transport("127.0.0.1", gateway.port)
+    try:
+        await transport.connect()
+        pending = asyncio.get_running_loop().create_future()
+        transport._pending_response = pending
+        await _push(gateway, b"\x01\x07")
+        with pytest.raises(ProtocolError, match="Unsupported response"):
+            await pending
+        assert transport._reader_task is None
+        assert transport.connected
+    finally:
+        await transport.close()
+
+
+async def test_idle_protocol_framing_error_uses_connection_loss_callback(gateway):
+    lost = asyncio.Event()
+    transport = Transport("127.0.0.1", gateway.port, on_connection_lost=lost.set)
+    await transport.connect()
+    await _push(gateway, b"\x01\x07")
+    await asyncio.wait_for(lost.wait(), 1)
+    assert not transport.connected
+    await transport.close()
+
+
+async def test_stale_reader_error_does_not_mark_active_connection_lost():
+    transport = Transport("gateway", 502)
+    losses = []
+    transport.on_connection_lost = lambda: losses.append(True)
+
+    class SwitchingReader:
+        async def readexactly(self, _count):
+            transport._reader = None
+            raise OSError("stale reader")
+
+    reader = SwitchingReader()
+    transport._reader = reader
+    task = asyncio.create_task(transport._read_loop(reader))
+    transport._reader_task = task
+    await task
+    assert not losses
+    assert transport._reader_task is None
+
+    other = asyncio.create_task(asyncio.sleep(60))
+    transport._reader_task = other
+    await transport._read_loop(object())
+    assert transport._reader_task is other
+    other.cancel()
+    await asyncio.gather(other, return_exceptions=True)
+
+
+@pytest.mark.parametrize("disconnecting,reported", [(True, False), (False, True)])
+async def test_connection_loss_report_is_suppressed_during_teardown_or_duplicate(
+    disconnecting, reported
+):
+    losses = []
+    transport = Transport(
+        "gateway", 502, on_connection_lost=lambda: losses.append(True)
+    )
+    transport._disconnecting = disconnecting
+    transport._loss_reported = reported
+    transport._mark_connection_lost(OSError("gone"))
+    assert not losses
+
+
+async def test_connection_loss_callback_errors_do_not_escape(caplog):
+    def fail():
+        raise RuntimeError("loss listener error")
+
+    transport = Transport("gateway", 502, on_connection_lost=fail)
+    transport._mark_connection_lost(OSError("gone"))
+    assert "Gateway loss listener failed" in caplog.text
+
+
+async def test_completed_controls_are_cleared_and_latest_wins_replaces_done_item():
+    transport = Transport("gateway", 502)
+    hold = asyncio.Event()
+    transport._worker = asyncio.create_task(hold.wait())
+    key = (1, "082a", "brightness")
+    first = transport._enqueue(write(1, 0x082A, 20), False, key, "control")
+    first.set_result(None)
+    replacement = transport._enqueue(write(1, 0x082A, 80), False, key, "control")
+    assert transport._controls[key].future is replacement
+    replacement.set_result(None)
+    transport.discard_controls()
+    assert not transport._controls
+    await transport.close()
+
+
+async def test_exchange_checks_connection_and_cancels_unawaited_response_future():
+    transport = Transport("gateway", 502)
+    transport.connect = AsyncMock()
+    with pytest.raises(GatewayError, match="not connected"):
+        await transport._exchange(read(1, 2), "poll")
+
+    class BrokenWriter:
+        def write(self, _request):
+            raise OSError("write failed")
+
+        async def drain(self):
+            return None
+
+    transport._reader = object()
+    transport._writer = BrokenWriter()
+    with pytest.raises(GatewayError, match="connection lost"):
+        await transport._exchange(read(1, 2), "poll")
+    assert transport._pending_response is None
+
+
+async def test_cancelled_active_request_does_not_rewrite_its_completed_future(
+    gateway, transport
+):
+    gateway.block = True
+    request = asyncio.create_task(transport.submit(read(1, 4), poll=True))
+    await gateway.arrived.wait()
+    request.cancel()
+    await asyncio.gather(request, return_exceptions=True)
+    gateway.modes[1] = "disconnect"
+    gateway.release.set()
+    for _ in range(100):
+        if transport.statistics.failed_requests:
+            break
+        await asyncio.sleep(0.001)
+    assert transport.statistics.failed_requests == 1
     await transport.close()

@@ -57,6 +57,7 @@ def _snapshot(hub: Any) -> dict[str, Any]:
             "reconnect_count": statistics.reconnect_count,
         },
         "devices": devices,
+        "s402_devices": [{"id": device_id} for device_id in hub.s402_ids],
         "entries": hub.transport.trace.snapshot(),
     }
 
@@ -82,6 +83,7 @@ def _empty_snapshot() -> dict[str, Any]:
             "reconnect_count": 0,
         },
         "devices": [],
+        "s402_devices": [],
         "entries": [],
     }
 

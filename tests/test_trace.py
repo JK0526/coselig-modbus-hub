@@ -1,5 +1,6 @@
 import asyncio
-from unittest.mock import Mock
+from datetime import UTC, datetime
+from unittest.mock import Mock, patch
 
 import pytest
 
@@ -7,6 +8,7 @@ from custom_components.coselig_modbus_hub.protocol import (
     CRCError,
     DeviceException,
     ProtocolError,
+    frame,
 )
 from custom_components.coselig_modbus_hub.scanner import scan
 from custom_components.coselig_modbus_hub.trace import ProtocolTraceBuffer
@@ -82,6 +84,35 @@ async def test_trace_enabled_disabled_and_broken_identical_transactions(gateway)
     assert gateway.requests == [request] * 3
 
 
+async def test_s402_event_has_standalone_trace_without_request_statistics(gateway):
+    trace = ProtocolTraceBuffer()
+    events = asyncio.Event()
+    transport = Transport(
+        "127.0.0.1",
+        gateway.port,
+        trace=trace,
+        on_s402_event=lambda _event: events.set(),
+    )
+    try:
+        await transport.connect()
+        await gateway.connected_event.wait()
+        writer = next(iter(gateway.writers))
+        packet = frame(bytes([1, 6, 1, 0xA0, 7, 8]))
+        writer.write(packet)
+        await writer.drain()
+        await asyncio.wait_for(events.wait(), 1)
+        entry = trace.snapshot()[0]
+        assert entry["direction"] == "EVENT"
+        assert entry["raw_hex"] == packet.hex(" ").upper()
+        assert entry["source"] == "s402_event"
+        assert transport.statistics.successful_requests == 0
+        assert transport.statistics.failed_requests == 0
+        assert transport.statistics.timeout_count == 0
+        assert transport.statistics.crc_error_count == 0
+    finally:
+        await transport.close()
+
+
 def test_ring_clear_and_restart():
     trace = ProtocolTraceBuffer()
     for index in range(250):
@@ -94,6 +125,21 @@ def test_ring_clear_and_restart():
     trace.clear()
     assert trace.snapshot() == []
     assert ProtocolTraceBuffer().snapshot() == []
+
+
+def test_identical_rapid_events_receive_unique_stable_timestamps():
+    instant = datetime(2026, 10, 15, tzinfo=UTC)
+    trace = ProtocolTraceBuffer()
+    with patch("custom_components.coselig_modbus_hub.trace.datetime") as clock:
+        clock.now.return_value = instant
+        trace.record("EVENT", b"\x01\x06\x01\xa0\x07\x01", source="s402_event")
+        trace.record("EVENT", b"\x01\x06\x01\xa0\x07\x01", source="s402_event")
+    entries = trace.snapshot()
+    assert entries[0]["raw_hex"] == entries[1]["raw_hex"]
+    assert entries[0]["timestamp"] != entries[1]["timestamp"]
+    assert datetime.fromisoformat(entries[1]["timestamp"]) > datetime.fromisoformat(
+        entries[0]["timestamp"]
+    )
 
 
 @pytest.mark.parametrize("capacity", [0, 501])

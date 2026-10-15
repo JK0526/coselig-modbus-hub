@@ -3,32 +3,40 @@
   "config": {
     "step": {
       "user": {"title": "TCP 閘道器", "description": "輸入閘道器 IP／主機名稱與連接埠。TCP 驗證成功後設定搜尋範圍；不會自動掃描。", "data": {"host": "IP／主機名稱", "port": "連接埠"}},
+      "setup_devices": {"title": "設定設備", "description": "選擇搜尋一般 Modbus 設備，或新增 S402 場景輸入。", "menu_options": {"search_modbus": "搜尋 Modbus 設備", "add_s402": "新增 S402 場景輸入"}},
+      "add_s402": {"title": "新增 S402 場景輸入", "description": "輸入 S402 本機 ID（0～255）。此 ID 與 Modbus Slave ID 分屬不同位址空間。", "data": {"s402_id": "S402 ID"}},
+      "s402_summary": {"title": "確認 S402 輸入", "description": "{summary}\n\n啟用 S402 4x 模式後，Modbus Slave #1 為保留地址。只有確認後才會儲存。", "menu_options": {"confirm_s402": "確認新增", "cancel_s402": "取消"}},
       "reconfigure": {"title": "變更 TCP 閘道器", "description": "新 TCP 連線成功後才儲存。設備與實體身份保持不變。", "data": {"host": "IP／主機名稱", "port": "連接埠"}},
       "scan": {"title": "正在掃描 Slave", "description": "已掃描 {current}/{total}；找到 {found} 個設備。"},
       "scan_failed": {"title": "掃描未完成", "description": "{reason}。既有設定未變更。", "menu_options": {"rescan": "重新搜尋", "scan_range": "修改搜尋範圍", "cancel": "返回"}},
       "scan_no_new": {"title": "未找到新的設備", "description": "已加入設備：\n{existing}\n\n本次未找到（仍保留設定）：\n{missing}\n\n設定未變更。", "menu_options": {"rescan": "重新搜尋", "scan_range": "修改搜尋範圍", "back_to_device_management": "返回設備管理"}},
       "scan_range": {"title": "搜尋 Modbus 設備", "description": "設定 Slave ID 範圍（1～247），按「開始搜尋」後才送出 request。縮小範圍可加快搜尋；預設帶入上次使用的範圍。", "data": {"scan_start": "起始 Slave ID", "scan_end": "結束 Slave ID"}, "submit": "開始搜尋"},
-      "scan_result": {"title": "新增設備", "description": "已加入設備：\n{existing}\n\n未掃到但仍保留設定：\n{missing}\n\n此處只能選擇本次新找到的設備。", "data": {"devices": "要新增的設備"}},
+      "scan_result": {"title": "新增設備", "description": "已加入設備：\n{existing}\n\n未掃到但仍保留設定：\n{missing}\n\n此處只能選擇本次新找到的設備。{reserved}", "data": {"devices": "要新增的設備"}},
       "model": {"title": "Slave {slave}：確認型號", "description": "偵測類型：{family}；建議型號：{recommended}。{model_reason}", "data": {"model": "設備型號"}},
       "groups": {"title": "Slave {slave}：輸出設定", "description": "請選擇每組輸出對的使用者模式。", "data": {"group_a": "輸出 1＋2", "group_b": "輸出 3＋4"}},
       "add_summary": {"title": "確認新增設備", "description": "{summary}\n\n共新增 {count} 台設備。確認前不會儲存。", "menu_options": {"confirm_add": "確認新增", "cancel_add": "取消"}},
       "edit_summary": {"title": "確認設備修改", "description": "{summary}\n\n確認前不會儲存。", "menu_options": {"confirm_edit": "確認修改", "cancel_edit": "取消"}}
     },
-    "error": {"invalid_host": "請輸入有效的 IP 或主機名稱。", "cannot_connect": "無法連線閘道器，請檢查位址、連接埠與電源。", "invalid_range": "起始 Slave 不可大於結束 Slave。", "invalid_poll_interval": "輪詢週期必須是 0 或至少 0.5 秒。", "no_devices": "請至少選擇一台新設備。", "no_devices_to_remove": "請至少選擇一台要移除的設備。"},
+    "error": {"invalid_host": "請輸入有效的 IP 或主機名稱。", "cannot_connect": "無法連線閘道器，請檢查位址、連接埠與電源。", "invalid_range": "起始 Slave 不可大於結束 Slave。", "invalid_poll_interval": "輪詢週期必須是 0 或至少 0.5 秒。", "no_devices": "請至少選擇一台新設備。", "no_devices_to_remove": "請至少選擇一台要移除的設備。", "invalid_s402_id": "S402 ID 必須介於 0～255。", "duplicate_s402_id": "此 S402 ID 已設定。", "reserved_slave_one": "S402 4x 模式會保留 Modbus Slave #1；新增 S402 前請先移除或變更 Slave #1，新增 Slave #1 前請先移除 S402。", "no_s402_to_remove": "請至少選擇一台要移除的 S402。"},
     "abort": {"already_configured": "此閘道器已設定。", "user_cancelled": "已取消，設定未儲存。"},
     "progress": {"scan": "正在掃描 {current}/{total}；找到 {found} 個設備。"}
   },
   "options": {
     "step": {
       "init": {"title": "Coselig 設定", "menu_options": {"device_management": "設備管理", "communication": "通訊設定"}},
-      "device_management": {"title": "設備管理", "menu_options": {"add_devices": "新增／搜尋設備", "edit_devices": "修改既有設備", "remove_devices": "移除設備", "back_to_options": "返回設定"}},
+      "device_management": {"title": "設備管理", "menu_options": {"add_devices": "新增／搜尋 Modbus 設備", "edit_devices": "修改既有 Modbus 設備", "remove_devices": "移除 Modbus 設備", "s402_management": "S402 場景輸入", "back_to_options": "返回設定"}},
+      "s402_management": {"title": "S402 場景輸入", "description": "已設定的 S402：\n{devices}", "menu_options": {"add_s402": "新增 S402", "remove_s402": "移除 S402", "back_to_device_management": "返回設備管理"}},
+      "add_s402": {"title": "新增 S402 場景輸入", "description": "輸入 S402 本機 ID（0～255）。此 ID 與 Modbus Slave ID 分屬不同位址空間。啟用 S402 4x 模式時不可設定 Slave #1。", "data": {"s402_id": "S402 ID"}},
+      "s402_summary": {"title": "確認 S402 輸入", "description": "{summary}\n\n啟用 S402 4x 模式後，Modbus Slave #1 為保留地址。只有確認後才會儲存。", "menu_options": {"confirm_s402": "確認新增", "cancel_s402": "取消"}},
+      "remove_s402": {"title": "移除 S402 場景輸入", "description": "選擇一台或多台 S402；確認後才會移除。", "data": {"devices": "要移除的 S402"}, "menu_options": {"back_to_s402_management": "返回 S402 場景輸入"}},
+      "s402_remove_summary": {"title": "確認移除 S402", "description": "要移除的 S402：\n{devices}\n\n確認後只會移除所選 S402。", "menu_options": {"confirm_s402_remove": "確認移除", "cancel_s402_remove": "取消"}},
       "communication": {"title": "通訊設定", "menu_options": {"polling": "輪詢週期", "back_to_options": "返回設定"}},
       "polling": {"title": "輪詢週期", "description": "設為 0 可暫停背景輪詢；控制與搜尋仍可使用。非零週期最低 0.5 秒。變更立即套用，不需 reload。", "data": {"poll_interval": "輪詢週期（秒）"}},
       "scan": {"title": "正在掃描 Slave", "description": "已掃描 {current}/{total}；找到 {found} 個設備。"},
       "scan_failed": {"title": "掃描未完成", "description": "{reason}。既有設定未變更。", "menu_options": {"rescan": "重新搜尋", "scan_range": "修改搜尋範圍", "cancel": "返回"}},
       "scan_no_new": {"title": "未找到新的設備", "description": "已加入設備：\n{existing}\n\n本次未找到（仍保留設定）：\n{missing}\n\n設定未變更。", "menu_options": {"rescan": "重新搜尋", "scan_range": "修改搜尋範圍", "back_to_device_management": "返回設備管理"}},
       "scan_range": {"title": "搜尋 Modbus 設備", "description": "設定 Slave ID 範圍（1～247），按「開始搜尋」後才送出 request。縮小範圍可加快搜尋；預設帶入上次使用的範圍。", "data": {"scan_start": "起始 Slave ID", "scan_end": "結束 Slave ID"}, "submit": "開始搜尋"},
-      "scan_result": {"title": "新增設備", "description": "已加入設備：\n{existing}\n\n未掃到但仍保留設定：\n{missing}\n\n此處只能選擇本次新找到的設備。", "data": {"devices": "要新增的設備"}},
+      "scan_result": {"title": "新增設備", "description": "已加入設備：\n{existing}\n\n未掃到但仍保留設定：\n{missing}\n\n此處只能選擇本次新找到的設備。{reserved}", "data": {"devices": "要新增的設備"}},
       "model": {"title": "Slave {slave}：確認型號", "description": "偵測類型：{family}；建議型號：{recommended}。{model_reason}", "data": {"model": "設備型號"}},
       "groups": {"title": "Slave {slave}：輸出設定", "description": "請選擇每組輸出對的使用者模式。", "data": {"group_a": "輸出 1＋2", "group_b": "輸出 3＋4"}},
       "add_summary": {"title": "確認新增設備", "description": "{summary}\n\n共新增 {count} 台設備。確認前不會儲存。", "menu_options": {"confirm_add": "確認新增", "cancel_add": "取消"}},
@@ -37,7 +45,7 @@
       "remove_devices": {"title": "移除設備", "description": "選擇一台或多台既有設備。只有下一頁確認後才會移除。", "data": {"devices": "要移除的設備"}, "menu_options": {"back_to_device_management": "返回設備管理"}},
       "remove_summary": {"title": "確認移除設備", "description": "即將移除：\n{devices}\n\n相關 Integration Entity、Child Device 與 Parent Device 會在 reload／registry 清理後移除。", "menu_options": {"confirm_remove": "確認移除", "cancel_remove": "取消"}}
     },
-    "error": {"invalid_range": "起始 Slave 不可大於結束 Slave。", "invalid_poll_interval": "輪詢週期必須是 0 或至少 0.5 秒。", "no_devices": "請至少選擇一台新設備。", "no_devices_to_remove": "請至少選擇一台要移除的設備。"},
+    "error": {"invalid_range": "起始 Slave 不可大於結束 Slave。", "invalid_poll_interval": "輪詢週期必須是 0 或至少 0.5 秒。", "no_devices": "請至少選擇一台新設備。", "no_devices_to_remove": "請至少選擇一台要移除的設備。", "invalid_s402_id": "S402 ID 必須介於 0～255。", "duplicate_s402_id": "此 S402 ID 已設定。", "reserved_slave_one": "S402 4x 模式會保留 Modbus Slave #1；新增 S402 前請先移除或變更 Slave #1，新增 Slave #1 前請先移除 S402。", "no_s402_to_remove": "請至少選擇一台要移除的 S402。"},
     "progress": {"scan": "正在掃描 {current}/{total}；找到 {found} 個設備。"}
   }
 }

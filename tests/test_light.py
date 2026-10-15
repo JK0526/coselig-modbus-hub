@@ -86,6 +86,19 @@ async def test_on_off_remembers_brightness_and_cct(gateway, lights):
     assert abs(light.color_temp_kelvin - 4000) < 30
 
 
+async def test_zero_brightness_turn_on_does_not_replace_remembered_level(
+    gateway, lights
+):
+    _coordinator, entities = lights
+    light = entities[0]
+    remembered = light._last_brightness
+
+    await light.async_turn_on(brightness=0)
+
+    assert not light.is_on
+    assert light._last_brightness == remembered
+
+
 async def test_unavailable_rejects_without_write(lights):
     coordinator, entities = lights
     coordinator.gateway_lost()

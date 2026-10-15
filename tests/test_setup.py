@@ -1,3 +1,4 @@
+import asyncio
 from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
@@ -15,6 +16,7 @@ from custom_components.coselig_modbus_hub import (
 from custom_components.coselig_modbus_hub.const import DOMAIN
 from custom_components.coselig_modbus_hub.hub import Hub
 from custom_components.coselig_modbus_hub.models import Device, Model
+from custom_components.coselig_modbus_hub.protocol import frame
 from custom_components.coselig_modbus_hub.transport import GatewayError
 
 
@@ -27,6 +29,111 @@ async def test_initial_offline_retry_and_cleanup(hass, entry):
         with pytest.raises(ConfigEntryNotReady):
             await async_setup_entry(hass, entry)
     assert hub.transport._closed
+
+
+async def test_s402_only_gateway_event_entities_availability_and_reload_lifecycle(
+    hass, entry, gateway
+):
+    hass.config_entries.async_update_entry(
+        entry,
+        data={"host": "127.0.0.1", "port": gateway.port},
+        options={
+            "poll_interval": 0,
+            "scan_start": 1,
+            "scan_end": 247,
+            "devices": [],
+            "s402_devices": [{"id": 7}],
+        },
+    )
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+    hub = entry.runtime_data
+    assert hub.coordinator.devices == ()
+    assert hub.s402_ids == (7,)
+    assert hub.transport.connected
+    assert hub.transport.statistics.successful_requests == 0
+
+    entities = er.async_entries_for_config_entry(er.async_get(hass), entry.entry_id)
+    assert len(entities) == 4
+    assert {entity.platform for entity in entities} == {"coselig_modbus_hub"}
+    assert {entity.unique_id for entity in entities} == {
+        f"{entry.entry_id}_s402_7_di{di}" for di in range(1, 5)
+    }
+    device_registry = dr.async_get(hass)
+    parents = dr.async_entries_for_config_entry(device_registry, entry.entry_id)
+    assert len(parents) == 1
+    assert parents[0].name == "Coselig S402 #7"
+    assert parents[0].manufacturer == "Coselig"
+    assert parents[0].model == "S402"
+
+    entity_by_di = {
+        int(entity.unique_id.rsplit("di", 1)[1]): entity for entity in entities
+    }
+    states = hass.states
+    assert states.get(entity_by_di[1].entity_id).state != "unavailable"
+    assert states.get(entity_by_di[1].entity_id).attributes["event_types"] == [
+        "press_end"
+    ]
+
+    state_changes: list[str] = []
+    unsub = hass.bus.async_listen(
+        "state_changed",
+        lambda event: state_changes.append(event.data["entity_id"]),
+    )
+    writer = next(writer for writer in gateway.writers if not writer.is_closing())
+    writer.write(frame(bytes([1, 6, 1, 0xA0, 7, 4])))
+    await writer.drain()
+    for _ in range(20):
+        await hass.async_block_till_done()
+        if entity_by_di[3].entity_id in state_changes:
+            break
+        await asyncio.sleep(0.01)
+    assert state_changes.count(entity_by_di[3].entity_id) == 1
+    assert states.get(entity_by_di[3].entity_id).attributes["event_type"] == "press_end"
+    assert all(
+        states.get(entity_by_di[di].entity_id).state == "unknown" for di in (1, 2, 4)
+    )
+
+    writer = next(writer for writer in gateway.writers if not writer.is_closing())
+    writer.close()
+    await writer.wait_closed()
+    for _ in range(100):
+        await hass.async_block_till_done()
+        if not hub.coordinator.gateway_available:
+            break
+        await asyncio.sleep(0.01)
+    assert not hub.coordinator.gateway_available
+    assert all(
+        states.get(entity.entity_id).state == "unavailable" for entity in entities
+    )
+    for _ in range(150):
+        await hass.async_block_till_done()
+        if hub.coordinator.gateway_available:
+            break
+        await asyncio.sleep(0.01)
+    assert hub.coordinator.gateway_available
+    assert all(
+        states.get(entity.entity_id).state != "unavailable" for entity in entities
+    )
+
+    assert await hass.config_entries.async_reload(entry.entry_id)
+    await hass.async_block_till_done()
+    state_changes.clear()
+    writer = next(writer for writer in gateway.writers if not writer.is_closing())
+    writer.write(frame(bytes([1, 6, 1, 0xA0, 7, 4])))
+    await writer.drain()
+    for _ in range(20):
+        await hass.async_block_till_done()
+        if any(entity_id.endswith("_s402_7_di3") for entity_id in state_changes):
+            break
+        await asyncio.sleep(0.01)
+    current = er.async_entries_for_config_entry(er.async_get(hass), entry.entry_id)
+    current_di3 = next(
+        entity for entity in current if entity.unique_id.endswith("_di3")
+    )
+    assert state_changes.count(current_di3.entity_id) == 1
+    unsub()
+    assert await hass.config_entries.async_unload(entry.entry_id)
 
 
 async def test_setup_error_cleanup(hass, entry):

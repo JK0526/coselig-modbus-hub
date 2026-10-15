@@ -4,7 +4,10 @@ import pytest
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
 
-from custom_components.coselig_modbus_hub import prune_registries
+from custom_components.coselig_modbus_hub import (
+    ensure_s402_parent_device,
+    prune_registries,
+)
 from custom_components.coselig_modbus_hub.const import DOMAIN
 from custom_components.coselig_modbus_hub.models import Device, Model
 
@@ -141,6 +144,80 @@ async def test_device_removal_is_explicit(hass, entry):
     prune_registries(hass, entry)
     assert devices.async_get(device.id) is None
     assert not er.async_entries_for_config_entry(registry, entry.entry_id)
+
+
+async def test_s402_registry_pruning_removes_only_selected_s402(hass, entry):
+    from homeassistant.helpers import area_registry as ar
+
+    options = {
+        **entry.options,
+        "devices": [{"slave": 51, "model": "p404"}],
+        "s402_devices": [{"id": 7}, {"id": 12}],
+    }
+    hass.config_entries.async_update_entry(entry, options=options)
+    entity_registry = er.async_get(hass)
+    device_registry = dr.async_get(hass)
+    p404 = Device(51, Model.P404)
+    parent = device_registry.async_get_or_create(
+        config_entry_id=entry.entry_id,
+        identifiers={(DOMAIN, f"{entry.entry_id}_slave_51")},
+        name="Coselig P404 #51",
+        manufacturer="Coselig",
+        model="P404",
+    )
+    area = ar.async_get(hass).async_create("P404 room")
+    outputs = {}
+    for output in p404.outputs:
+        unique_id = output.unique_id(entry.entry_id, 51)
+        entity = entity_registry.async_get_or_create(
+            "light", DOMAIN, unique_id, config_entry=entry, device_id=parent.id
+        )
+        entity_registry.async_update_entity(
+            entity.entity_id, name=f"Custom {output.name}", area_id=area.id
+        )
+        outputs[unique_id] = (entity.entity_id, f"Custom {output.name}")
+    s402_entities = {}
+    s402_devices = {}
+    for device_id in (7, 12):
+        device = ensure_s402_parent_device(hass, entry, device_id)
+        s402_devices[device_id] = device.id
+        for di in range(1, 5):
+            unique_id = f"{entry.entry_id}_s402_{device_id}_di{di}"
+            entity = entity_registry.async_get_or_create(
+                "event",
+                DOMAIN,
+                unique_id,
+                config_entry=entry,
+                device_id=device.id,
+                has_entity_name=True,
+                original_name=f"DI{di}",
+            )
+            s402_entities[(device_id, di)] = entity.entity_id
+
+    prune_registries(hass, entry)
+    assert all(
+        entity_registry.async_get(entity_id) for entity_id in s402_entities.values()
+    )
+    hass.config_entries.async_update_entry(
+        entry,
+        options={**options, "s402_devices": [{"id": 12}]},
+    )
+    prune_registries(hass, entry)
+    assert all(
+        entity_registry.async_get(s402_entities[(7, di)]) is None for di in range(1, 5)
+    )
+    assert all(
+        entity_registry.async_get(s402_entities[(12, di)]) is not None
+        for di in range(1, 5)
+    )
+    assert device_registry.async_get(s402_devices[7]) is None
+    assert device_registry.async_get(s402_devices[12]) is not None
+    for unique_id, (entity_id, name) in outputs.items():
+        saved = entity_registry.async_get(entity_id)
+        assert saved is not None
+        assert saved.unique_id == unique_id
+        assert saved.name == name
+        assert saved.area_id == area.id
 
 
 async def test_reconfigure_registry_user_name_preserved(hass, entry):

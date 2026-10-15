@@ -52,4 +52,5 @@ async def async_get_config_entry_diagnostics(
             }
             for device in coordinator.devices
         ],
+        "s402_devices": [{"id": device_id} for device_id in hub.s402_ids],
     }

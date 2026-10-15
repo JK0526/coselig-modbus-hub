@@ -7,6 +7,21 @@
         "description": "Enter the gateway host and port. After TCP validation, choose a search range; scanning does not start automatically.",
         "data": {"host": "IP / Host", "port": "Port"}
       },
+      "setup_devices": {
+        "title": "Set up devices",
+        "description": "Choose whether this gateway has pollable Modbus devices or S402 scene inputs.",
+        "menu_options": {"search_modbus": "Search Modbus devices", "add_s402": "Add S402 scene input"}
+      },
+      "add_s402": {
+        "title": "Add S402 scene input",
+        "description": "Enter the S402's local ID (0–255). It is separate from Modbus Slave IDs.",
+        "data": {"s402_id": "S402 ID"}
+      },
+      "s402_summary": {
+        "title": "Confirm S402 input",
+        "description": "{summary}\n\nEnabling S402 4x mode reserves Modbus Slave #1. Settings are saved only after confirmation.",
+        "menu_options": {"confirm_s402": "Confirm add", "cancel_s402": "Cancel"}
+      },
       "reconfigure": {
         "title": "Change TCP gateway",
         "description": "Settings are saved only after the new TCP connection succeeds. Device and entity identities are retained.",
@@ -34,7 +49,7 @@
       },
       "scan_result": {
         "title": "Add new devices",
-        "description": "Existing devices:\n{existing}\n\nMissing devices remain configured:\n{missing}\n\nOnly newly found devices can be selected here.",
+        "description": "Existing devices:\n{existing}\n\nMissing devices remain configured:\n{missing}\n\nOnly newly found devices can be selected here. {reserved}",
         "data": {"devices": "New devices to add"}
       },
       "model": {
@@ -64,7 +79,11 @@
       "invalid_range": "Start must not exceed end.",
       "invalid_poll_interval": "Interval must be 0 or at least 0.5 seconds.",
       "no_devices": "Select at least one new device to add.",
-      "no_devices_to_remove": "Select at least one device to remove."
+      "no_devices_to_remove": "Select at least one device to remove.",
+      "invalid_s402_id": "Enter an S402 ID from 0 to 255.",
+      "duplicate_s402_id": "This S402 ID is already configured.",
+      "reserved_slave_one": "S402 4x mode reserves Modbus Slave #1. Remove or change Slave #1 before adding S402, or remove S402 before adding Slave #1.",
+      "no_s402_to_remove": "Select at least one S402 device to remove."
     },
     "abort": {
       "already_configured": "This gateway is already configured.",
@@ -80,7 +99,33 @@
       },
       "device_management": {
         "title": "Device management",
-        "menu_options": {"add_devices": "Add / search devices", "edit_devices": "Modify an existing device", "remove_devices": "Remove devices", "back_to_options": "Back to settings"}
+        "menu_options": {"add_devices": "Add / search Modbus devices", "edit_devices": "Modify an existing device", "remove_devices": "Remove Modbus devices", "s402_management": "S402 scene inputs", "back_to_options": "Back to settings"}
+      },
+      "s402_management": {
+        "title": "S402 scene inputs",
+        "description": "Configured S402 devices:\n{devices}",
+        "menu_options": {"add_s402": "Add S402", "remove_s402": "Remove S402", "back_to_device_management": "Back to device management"}
+      },
+      "add_s402": {
+        "title": "Add S402 scene input",
+        "description": "Enter the S402's local ID (0–255). It is separate from Modbus Slave IDs. Slave #1 must not be configured while S402 4x mode is enabled.",
+        "data": {"s402_id": "S402 ID"}
+      },
+      "s402_summary": {
+        "title": "Confirm S402 input",
+        "description": "{summary}\n\nEnabling S402 4x mode reserves Modbus Slave #1. Settings are saved only after confirmation.",
+        "menu_options": {"confirm_s402": "Confirm add", "cancel_s402": "Cancel"}
+      },
+      "remove_s402": {
+        "title": "Remove S402 scene inputs",
+        "description": "Select one or more S402 devices. Removal happens only after confirmation.",
+        "data": {"devices": "S402 devices to remove"},
+        "menu_options": {"back_to_s402_management": "Back to S402 scene inputs"}
+      },
+      "s402_remove_summary": {
+        "title": "Confirm S402 removal",
+        "description": "S402 devices to remove:\n{devices}\n\nOnly the selected S402 devices will be removed after confirmation.",
+        "menu_options": {"confirm_s402_remove": "Confirm removal", "cancel_s402_remove": "Cancel"}
       },
       "communication": {
         "title": "Communication settings",
@@ -155,7 +200,11 @@
       "invalid_range": "Start must not exceed end.",
       "invalid_poll_interval": "Interval must be 0 or at least 0.5 seconds.",
       "no_devices": "Select at least one new device to add.",
-      "no_devices_to_remove": "Select at least one device to remove."
+      "no_devices_to_remove": "Select at least one device to remove.",
+      "invalid_s402_id": "Enter an S402 ID from 0 to 255.",
+      "duplicate_s402_id": "This S402 ID is already configured.",
+      "reserved_slave_one": "S402 4x mode reserves Modbus Slave #1. Remove or change Slave #1 before adding S402, or remove S402 before adding Slave #1.",
+      "no_s402_to_remove": "Select at least one S402 device to remove."
     },
     "progress": {"scan": "Scanning {current}/{total}; found {found} devices."}
   }

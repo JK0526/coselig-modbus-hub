@@ -234,6 +234,54 @@ test('direction and status type filters isolate TX, RX and OK rows', async () =>
   h.panel.disconnectedCallback();
 });
 
+test('S402 EVENT stays standalone between TX and RX and EVENT filter isolates it', async () => {
+  const h = createHarness();
+  await h.flush();
+  const tx = entry('TX', '33 03 08 2A 00 02', null, 'poll');
+  const event = entry('EVENT', '01 06 01 A0 07 08 44 12', null, 's402_event');
+  const rx = entry('RX', '33 03 04 00 14 00 19', null, 'poll');
+  const ok = entry('OK', '', 12, 'poll');
+  const transactions = h.Constructor.buildTransactions([tx, event, rx, ok]);
+  assert.equal(transactions.length, 2);
+  assert.deepEqual([...transactions.map((transaction) => transaction.entries.length)], [3, 1]);
+  assert.deepEqual([...transactions[0].entries.map((item) => item.direction)], ['TX', 'RX', 'OK']);
+  assert.equal(transactions[1].entries[0].direction, 'EVENT');
+
+  h.panel._latest = snapshot([tx, event, rx, ok]);
+  h.panel._latest.s402_devices = [{ id: 7 }];
+  h.panel._ingestSnapshot(h.panel._latest.entries);
+  h.panel._render();
+  const filter = h.panel.shadowRoot.querySelector('#type-filter');
+  assert.match(monitorSource, /<option value="EVENT">事件<\/option>/);
+  filter.value = 'EVENT';
+  h.panel._filterChanged();
+  const rows = h.panel.shadowRoot.querySelector('#trace').children;
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].className, 'trace-entry trace-event');
+  assert.equal(rows[0].children[2].className, 'trace-raw trace-raw-event');
+  rows[0].onclick();
+  const decoded = h.panel.shadowRoot.querySelector('#decoder').textContent;
+  assert.match(decoded, /S402 Event/);
+  assert.match(decoded, /S402 #7/);
+  assert.match(decoded, /DI4/);
+  assert.match(decoded, /PRESS_END/);
+  assert.match(decoded, /是/);
+});
+
+test('unknown S402 EVENT is decoded as unconfigured and repeated events are retained', async () => {
+  const h = createHarness();
+  await h.flush();
+  const first = entry('EVENT', '01 06 01 A0 12 01 83 85', null, 's402_event');
+  const second = { ...first, timestamp: '2026-10-14T06:32:08.215Z' };
+  const merged = h.Constructor.mergeTraceHistory([], [first, second]);
+  assert.equal(merged.length, 2);
+  const eventTransaction = h.Constructor.buildTransactions([first])[0];
+  const fields = h.Constructor.decodeTransaction(eventTransaction, null, [{ id: 7 }]);
+  assert.equal(JSON.stringify(fields.find(([name]) => name === 'Device')), JSON.stringify(['Device', 'S402 #18（未設定）']));
+  assert.equal(JSON.stringify(fields.find(([name]) => name === 'Input')), JSON.stringify(['Input', 'DI1']));
+  assert.equal(JSON.stringify(fields.find(([name]) => name === 'Configured')), JSON.stringify(['Configured', '否']));
+});
+
 test('clicking a Device Health row applies only a frontend Slave filter', async () => {
   const h = createHarness(); await h.flush(); h.subscriptions[0].callback(snapshot());
   const row = h.panel.shadowRoot.querySelector('#devices').children[0]; row.onclick();

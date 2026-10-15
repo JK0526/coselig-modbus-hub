@@ -1,5 +1,5 @@
 import asyncio
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 
@@ -163,6 +163,28 @@ async def test_loop_reconnect_reset_and_immediate_poll(coordinator):
     coordinator._closed = False
     coordinator.gateway_lost()
     assert coordinator.next_backoff() == 1
+
+
+async def test_reconnect_notifies_listeners_for_empty_s402_only_gateway(hass):
+    transport = Transport("test", 502)
+    coordinator = Coordinator(hass, transport, (), 0)
+    coordinator.gateway_lost()
+    updates = Mock()
+
+    async def connect_once():
+        coordinator._closed = True
+
+    with (
+        patch.object(transport, "connect", new=AsyncMock(side_effect=connect_once)),
+        patch.object(coordinator, "async_set_updated_data", new=updates),
+        patch(
+            "custom_components.coselig_modbus_hub.coordinator.asyncio.sleep",
+            new=AsyncMock(),
+        ),
+    ):
+        await coordinator._loop()
+    assert coordinator.gateway_available
+    updates.assert_called_once_with(coordinator.states)
 
 
 async def test_long_round_no_backlog(coordinator):

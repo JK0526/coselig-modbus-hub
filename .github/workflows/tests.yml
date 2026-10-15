@@ -17,7 +17,7 @@ jobs:
       - run: uv run ruff check custom_components tests
       - run: uv run ruff format --check custom_components tests
       - run: node --test tests/frontend/monitor.test.cjs
-      - run: uv run pytest --timeout=30 --cov-fail-under=99
+      - run: uv run pytest --timeout=30 --cov-fail-under=99.5
       - name: Config flow coverage gate
         run: |
           uv run python - <<'PY'

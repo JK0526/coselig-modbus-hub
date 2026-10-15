@@ -23,6 +23,7 @@ from .const import (
 )
 from .coordinator import valid_poll_interval
 from .models import Device, GroupMode, Model, devices_from_options
+from .s402 import S402_ID_MAX, S402_ID_MIN, s402_devices_from_options
 from .scanner import ScanResult, scan
 from .transport import GatewayError, Transport
 
@@ -117,6 +118,9 @@ class ProfileFlow:
             "found": "0",
         }
         self._scan_error = False
+        self._s402_ids: list[int] = []
+        self._s402_pending_id: int | None = None
+        self._s402_remove_selected: list[int] = []
 
     def _scan_progress(self, current: int, total: int, found: int) -> None:
         self._progress = {
@@ -245,6 +249,13 @@ class ProfileFlow:
         )
         if user_input is not None:
             self._selected = sorted(int(value) for value in user_input["devices"])
+            if self._s402_ids and 1 in self._selected:
+                return self.async_show_form(
+                    step_id="scan_result",
+                    errors={"base": "reserved_slave_one"},
+                    data_schema=self._scan_result_schema(new_slaves),
+                    description_placeholders=self._scan_result_placeholders(),
+                )
             if self._selected:
                 self._flow_action = "add"
                 self._edit_old = None
@@ -267,6 +278,7 @@ class ProfileFlow:
         options = [
             {"value": str(slave), "label": f"Slave {slave} · New"}
             for slave in new_slaves
+            if not self._s402_ids or slave != 1
         ]
         return vol.Schema(
             {vol.Required("devices", default=[]): select(options, multiple=True)}
@@ -276,7 +288,103 @@ class ProfileFlow:
         return {
             "existing": self._existing_description(),
             "missing": self._missing_description(),
+            "reserved": (
+                "Slave #1 is reserved while S402 4x mode is enabled."
+                if self._s402_ids
+                else "—"
+            ),
         }
+
+    async def async_step_setup_devices(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Choose the first device type without forcing a Modbus scan."""
+        return self.async_show_menu(
+            step_id="setup_devices",
+            menu_options=["search_modbus", "add_s402"],
+        )
+
+    async def async_step_search_modbus(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        self._flow_action = "add"
+        return await self.async_step_scan_range()
+
+    async def async_step_add_s402(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        errors: dict[str, str] = {}
+        if user_input is not None:
+            try:
+                device_id = int(user_input["s402_id"])
+            except TypeError, ValueError:
+                device_id = None
+            if device_id is None or not S402_ID_MIN <= device_id <= S402_ID_MAX:
+                errors["s402_id"] = "invalid_s402_id"
+            elif device_id in self._s402_ids:
+                errors["s402_id"] = "duplicate_s402_id"
+            elif 1 in self._existing:
+                errors["base"] = "reserved_slave_one"
+            else:
+                self._s402_pending_id = device_id
+                return await self.async_step_s402_summary()
+        return self.async_show_form(
+            step_id="add_s402",
+            errors=errors,
+            data_schema=vol.Schema(
+                {
+                    vol.Required("s402_id"): vol.All(
+                        vol.Coerce(int), vol.Range(min=S402_ID_MIN, max=S402_ID_MAX)
+                    )
+                }
+            ),
+        )
+
+    async def async_step_s402_summary(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        device_id = self._s402_pending_id
+        if device_id is None:
+            return await self.async_step_add_s402()
+        return self.async_show_menu(
+            step_id="s402_summary",
+            menu_options=["confirm_s402", "cancel_s402"],
+            description_placeholders={
+                "summary": (
+                    f"Coselig S402 #{device_id}\n"
+                    "DI1：單擊事件\nDI2：單擊事件\n"
+                    "DI3：單擊事件\nDI4：單擊事件"
+                )
+            },
+        )
+
+    async def async_step_confirm_s402(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        device_id = self._s402_pending_id
+        if device_id is None:
+            return await self.async_step_add_s402()
+        if isinstance(self, CoseligOptionsFlow):
+            updated = self._copy_options()
+            existing = list(updated.get("s402_devices", []))
+            existing.append({"id": device_id})
+            updated["s402_devices"] = existing
+            return self.async_create_entry(data=updated)
+        self._options["devices"] = []
+        self._options["s402_devices"] = [{"id": device_id}]
+        return self.async_create_entry(
+            title=f"Coselig {self._gateway['host']}",
+            data=self._gateway,
+            options=self._options,
+        )
+
+    async def async_step_cancel_s402(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        self._s402_pending_id = None
+        if isinstance(self, CoseligOptionsFlow):
+            return await self.async_step_s402_management()
+        return self.async_abort(reason="user_cancelled")
 
     async def _start_profiles(self) -> ConfigFlowResult:
         self._working_devices = []
@@ -466,7 +574,7 @@ class ProfileFlow:
     async def async_step_back_to_device_management(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
-        return await self.async_step_device_management()
+        return await self.async_step_setup_devices()
 
     def _persist_add(self) -> ConfigFlowResult:
         self._options["devices"] = [
@@ -521,7 +629,7 @@ class ConfigFlow(ProfileFlow, config_entries.ConfigFlow, domain=DOMAIN):
                 errors["base"] = "cannot_connect"
             else:
                 self._async_abort_entries_match(self._gateway)
-                return await self.async_step_scan_range()
+                return await self.async_step_setup_devices()
         return self.async_show_form(
             step_id="user", data_schema=gateway_schema(user_input or {}), errors=errors
         )
@@ -572,6 +680,9 @@ class CoseligOptionsFlow(ProfileFlow, config_entries.OptionsFlowWithReload):
             device.slave: device
             for device in devices_from_options(self.config_entry.options)
         }
+        self._s402_ids = list(
+            s402_devices_from_options(dict(self.config_entry.options))
+        )
         raw_devices = self.config_entry.options.get("devices", [])
         self._existing_raw_devices = copy.deepcopy(raw_devices)
         self._existing_raw = {
@@ -590,9 +701,100 @@ class CoseligOptionsFlow(ProfileFlow, config_entries.OptionsFlowWithReload):
                 "add_devices",
                 "edit_devices",
                 "remove_devices",
+                "s402_management",
                 "back_to_options",
             ],
         )
+
+    async def async_step_s402_management(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        return self.async_show_menu(
+            step_id="s402_management",
+            menu_options=["add_s402", "remove_s402", "back_to_device_management"],
+            description_placeholders={
+                "devices": "\n".join(
+                    f"S402 #{device_id}" for device_id in self._s402_ids
+                )
+                or "尚未設定 S402。"
+            },
+        )
+
+    async def async_step_remove_s402(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        if not self._s402_ids:
+            return self.async_show_menu(
+                step_id="remove_s402",
+                menu_options=["back_to_s402_management"],
+                description_placeholders={"devices": "尚未設定 S402。"},
+            )
+        options = [
+            {"value": str(device_id), "label": f"S402 #{device_id}"}
+            for device_id in self._s402_ids
+        ]
+        if user_input is not None:
+            self._s402_remove_selected = sorted(
+                int(value) for value in user_input["devices"]
+            )
+            if not self._s402_remove_selected:
+                return self.async_show_form(
+                    step_id="remove_s402",
+                    errors={"devices": "no_s402_to_remove"},
+                    data_schema=vol.Schema(
+                        {
+                            vol.Required("devices", default=[]): select(
+                                options, multiple=True
+                            )
+                        }
+                    ),
+                )
+            return await self.async_step_s402_remove_summary()
+        return self.async_show_form(
+            step_id="remove_s402",
+            data_schema=vol.Schema(
+                {vol.Required("devices", default=[]): select(options, multiple=True)}
+            ),
+        )
+
+    async def async_step_s402_remove_summary(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        return self.async_show_menu(
+            step_id="s402_remove_summary",
+            menu_options=["confirm_s402_remove", "cancel_s402_remove"],
+            description_placeholders={
+                "devices": "\n".join(
+                    f"S402 #{device_id}" for device_id in self._s402_remove_selected
+                )
+            },
+        )
+
+    async def async_step_confirm_s402_remove(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        updated = self._copy_options()
+        updated["s402_devices"] = [
+            copy.deepcopy(device)
+            for device in updated.get("s402_devices", [])
+            if int(device["id"]) not in self._s402_remove_selected
+        ]
+        return self.async_create_entry(data=updated)
+
+    async def async_step_cancel_s402_remove(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        return await self.async_step_s402_management()
+
+    async def async_step_back_to_s402_management(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        return await self.async_step_s402_management()
+
+    async def async_step_back_to_device_management(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        return await self.async_step_device_management()
 
     async def async_step_communication(
         self, user_input: dict[str, Any] | None = None
@@ -803,6 +1005,7 @@ class CoseligOptionsFlow(ProfileFlow, config_entries.OptionsFlowWithReload):
                 "add_devices",
                 "edit_devices",
                 "remove_devices",
+                "s402_management",
                 "back_to_options",
             ],
         )
