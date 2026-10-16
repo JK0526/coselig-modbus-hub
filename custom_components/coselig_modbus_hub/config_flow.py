@@ -789,13 +789,8 @@ class CoseligOptionsFlow(ProfileFlow, config_entries.OptionsFlowWithReload):
         options = self._installed_device_options()
         if not options:
             return self.async_show_menu(
-                step_id="manage_devices",
+                step_id="manage_devices_empty",
                 menu_options=["back_to_device_management"],
-                description_placeholders={
-                    "devices": "尚未設定裝置。"
-                    if self._is_zh()
-                    else "No devices are configured."
-                },
             )
         if user_input is not None:
             selected = user_input.get("device", "")

@@ -1,6 +1,8 @@
 """Config Flow intent separation and confirmation regression tests."""
 
 import asyncio
+import json
+from pathlib import Path
 from unittest.mock import AsyncMock, patch
 from uuid import uuid4
 
@@ -56,6 +58,14 @@ def _choices(result, key):
         for schema_key, item in result["data_schema"].schema.items()
         if schema_key.schema == key
     )
+
+
+def _translation_strings(value):
+    if isinstance(value, dict):
+        for child in value.values():
+            yield from _translation_strings(child)
+    elif isinstance(value, str):
+        yield value
 
 
 async def _options_ready(options):
@@ -331,12 +341,76 @@ async def test_remove_s402_empty_state_has_return_menu(options, entry, hass):
     hass.config_entries.async_update_entry(
         entry, options={**entry.options, "devices": [], "s402_devices": []}
     )
+    original = dict(entry.options)
     await _options_ready(options)
     result = await options.async_step_manage_devices()
+    assert result["step_id"] == "manage_devices_empty"
+    assert result["description_placeholders"] is None
     assert result["menu_options"] == ["back_to_device_management"]
     assert (await options.async_step_back_to_device_management())["step_id"] == (
         "device_management"
     )
+    assert entry.options == original
+
+
+@pytest.mark.parametrize(
+    (
+        "filename",
+        "expected_title",
+        "expected_description",
+        "expected_empty_title",
+        "expected_empty_description",
+        "expected_back_label",
+    ),
+    [
+        (
+            "strings.json",
+            "Select device",
+            "Select the device you want to manage.",
+            "Installed devices",
+            "No devices are configured.",
+            "Back to previous step",
+        ),
+        (
+            "translations/en.json",
+            "Select device",
+            "Select the device you want to manage.",
+            "Installed devices",
+            "No devices are configured.",
+            "Back to previous step",
+        ),
+        (
+            "translations/zh-Hant.json",
+            "選擇裝置",
+            "選擇要管理的裝置。",
+            "已安裝裝置",
+            "尚未設定任何裝置。",
+            "返回上一層",
+        ),
+    ],
+)
+def test_manage_device_translation_steps_use_only_static_text(
+    filename,
+    expected_title,
+    expected_description,
+    expected_empty_title,
+    expected_empty_description,
+    expected_back_label,
+):
+    path = Path("custom_components/coselig_modbus_hub") / filename
+    steps = json.loads(path.read_text())["options"]["step"]
+    manage = steps["manage_devices"]
+    empty = steps["manage_devices_empty"]
+
+    assert manage["title"] == expected_title
+    assert manage["description"] == expected_description
+    assert empty["title"] == expected_empty_title
+    assert empty["description"] == expected_empty_description
+    for step in (manage, empty):
+        assert all(
+            "{" not in text and "}" not in text for text in _translation_strings(step)
+        )
+    assert empty["menu_options"]["back_to_device_management"] == expected_back_label
 
 
 async def test_s402_flows_handle_missing_pending_and_configured_list_safely(
@@ -355,10 +429,13 @@ async def test_s402_flows_handle_missing_pending_and_configured_list_safely(
     await _options_ready(options)
     options._existing = {}
     options._s402_ids = [7]
+    original = dict(entry.options)
     result = await options.async_step_manage_devices()
     assert _choices(result, "device") == [
         {"value": "s402:7", "label": "S402 #7 · 4-input scene module"}
     ]
+    assert result["description_placeholders"] is None
+    assert entry.options == original
     result = await options.async_step_manage_devices({"device": "s402:7"})
     assert result["step_id"] == "s402_device_management"
     result = await options.async_step_remove_managed_s402()
@@ -599,12 +676,14 @@ async def test_unified_device_selector_routes_each_device_to_its_capabilities(
     hass.config_entries.async_update_entry(entry, options=original)
     await _options_ready(options)
     result = await options.async_step_manage_devices()
+    assert result["description_placeholders"] is None
     assert _choices(result, "device") == [
         {"value": "modbus:22", "label": "P210 #22 · 2-channel PWM dimmer"},
         {"value": "modbus:51", "label": "P404 #51 · 4-channel PWM dimmer"},
         {"value": "modbus:63", "label": "R410 #63 · 4-channel Relay"},
         {"value": "s402:7", "label": "S402 #7 · 4-input scene module"},
     ]
+    assert entry.options == original
 
     p404 = await _select_modbus(options, 51)
     assert p404["menu_options"] == [
@@ -947,14 +1026,17 @@ async def test_edit_and_remove_empty_device_lists_have_safe_back_path(
     hass.config_entries.async_update_entry(
         entry, options={**entry.options, "devices": []}
     )
+    original = dict(entry.options)
     await _options_ready(options)
-    assert (await options.async_step_manage_devices())["menu_options"] == [
-        "back_to_device_management"
-    ]
+    empty = await options.async_step_manage_devices()
+    assert empty["step_id"] == "manage_devices_empty"
+    assert empty["description_placeholders"] is None
+    assert empty["menu_options"] == ["back_to_device_management"]
     assert (await options.async_step_back_to_device_management())[
         "step_id"
     ] == "device_management"
     assert (await options.async_step_back_to_options())["step_id"] == "init"
+    assert entry.options == original
 
 
 async def test_polling_preserves_unknown_options_and_applies_runtime_value(

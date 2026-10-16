@@ -213,9 +213,14 @@
         "menu_options": {"search_modbus": "Search Modbus devices", "add_s402": "Add S402 scene input", "back_to_device_management": "Back to previous step"}
       },
       "manage_devices": {
-        "title": "Select a device",
-        "description": "{devices}",
+        "title": "Select device",
+        "description": "Select the device you want to manage.",
         "data": {"device": "Device"},
+        "menu_options": {"back_to_device_management": "Back to previous step"}
+      },
+      "manage_devices_empty": {
+        "title": "Installed devices",
+        "description": "No devices are configured.",
         "menu_options": {"back_to_device_management": "Back to previous step"}
       },
       "device_menu": {
