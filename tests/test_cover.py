@@ -50,7 +50,7 @@ async def cover_runtime(hass, gateway):
     await transport.close()
 
 
-async def test_cover_actions_use_019b_and_keep_state_unknown(cover_runtime):
+async def test_cover_actions_use_019b_and_report_assumed_command_state(cover_runtime):
     coordinator, cover, gateway = cover_runtime
     assert cover.available
     assert cover.supported_features == (
@@ -60,13 +60,30 @@ async def test_cover_actions_use_019b_and_keep_state_unknown(cover_runtime):
     assert cover.is_closed is None
     assert cover.is_opening is None
     assert cover.is_closing is None
+    assert cover.assumed_state
+    assert cover.state is None
     assert cover.device_info["identifiers"] == {(DOMAIN, "entry_slave_63")}
 
     gateway.requests.clear()
     await cover.async_open_cover()
+    assert cover.state == "open"
+    assert cover.is_closed is False
+    assert cover.assumed_state
+    assert cover.current_cover_position is None
+    assert cover.is_opening is None
+    assert cover.is_closing is None
+
     await cover.async_stop_cover()
+    assert cover.state is None
+    assert cover.is_closed is None
+
     await cover.async_close_cover()
+    assert cover.state == "closed"
+    assert cover.is_closed is True
+
     await cover.async_open_cover()
+    assert cover.state == "open"
+    assert cover.is_closed is False
     assert [(address, value) for _slave, address, value in gateway.register_writes] == [
         (0x019B, 0x0508),
         (0x019B, 0x0509),
@@ -75,7 +92,8 @@ async def test_cover_actions_use_019b_and_keep_state_unknown(cover_runtime):
     ]
     assert [request[1] for request in gateway.requests] == [6, 6, 6, 6]
     assert cover.current_cover_position is None
-    assert cover.is_closed is None
+    assert cover.is_closed is False
+    assert cover.assumed_state
     assert cover.is_opening is None
     assert cover.is_closing is None
     assert coordinator.poll_interval == 0
@@ -143,6 +161,66 @@ async def test_timeout_returns_homeassistant_error_without_retry(cover_runtime):
     assert cover.is_opening is None
     assert cover.is_closing is None
     assert coordinator.states[63].available
+
+
+async def test_failed_open_close_and_stop_preserve_last_successful_state(cover_runtime):
+    _coordinator, cover, gateway = cover_runtime
+
+    await cover.async_close_cover()
+    assert cover.is_closed is True
+
+    gateway.requests.clear()
+    gateway.modes[63] = "timeout"
+    with pytest.raises(HomeAssistantError, match="no automatic retry"):
+        await cover.async_open_cover()
+    assert cover.is_closed is True
+
+    gateway.modes[63] = "normal"
+    await cover.async_open_cover()
+    assert cover.is_closed is False
+
+    gateway.requests.clear()
+    gateway.modes[63] = "timeout"
+    with pytest.raises(HomeAssistantError, match="no automatic retry"):
+        await cover.async_close_cover()
+    assert cover.is_closed is False
+    with pytest.raises(HomeAssistantError, match="no automatic retry"):
+        await cover.async_stop_cover()
+    assert cover.is_closed is False
+    assert len(gateway.requests) == 2
+
+
+async def test_assumed_state_resets_on_device_and_gateway_availability_changes(
+    cover_runtime,
+):
+    coordinator, cover, _gateway = cover_runtime
+
+    await cover.async_open_cover()
+    assert cover.is_closed is False
+
+    coordinator.states[63].available = False
+    cover._handle_coordinator_update()
+    assert not cover.available
+    assert cover.is_closed is None
+
+    coordinator.states[63].available = True
+    cover._handle_coordinator_update()
+    assert cover.available
+    assert cover.is_closed is None
+
+    await cover.async_close_cover()
+    assert cover.is_closed is True
+    coordinator.gateway_lost()
+    cover._handle_coordinator_update()
+    assert not cover.available
+    assert cover.is_closed is None
+
+    coordinator.gateway_available = True
+    coordinator.states[63].available = True
+    coordinator.async_set_updated_data(coordinator.states)
+    cover._handle_coordinator_update()
+    assert cover.available
+    assert cover.is_closed is None
 
 
 async def test_gateway_disconnect_marks_cover_unavailable(cover_runtime):
@@ -282,6 +360,108 @@ async def test_occupied_relay_registry_identity_and_metadata_survive_cover_reloa
         for entity in er.async_entries_for_config_entry(registry, entry.entry_id)
         if entity.domain == "cover"
     ]
+    await hass.config_entries.async_unload(entry.entry_id)
+
+
+async def test_assumed_state_tracks_ha_availability_and_is_not_restored(
+    hass, entry, gateway
+):
+    gateway.families[63] = "relay"
+    gateway.modes[63] = "exception"
+    cover = {
+        "id": uuid4().hex,
+        "slave": 63,
+        "name": "Garage door",
+        "device_class": "garage",
+        "mode": "two_relay",
+        "open_relay": 1,
+        "close_relay": 2,
+        "pulse_tenths": 5,
+    }
+    hass.config_entries.async_update_entry(
+        entry,
+        data={"host": "127.0.0.1", "port": gateway.port},
+        options={
+            **entry.options,
+            "poll_interval": 0,
+            "devices": [{"slave": 63, "model": "r410"}],
+            "r410_covers": [cover],
+        },
+    )
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+    registry = er.async_get(hass)
+    cover_entry = next(
+        entity
+        for entity in er.async_entries_for_config_entry(registry, entry.entry_id)
+        if entity.domain == "cover"
+    )
+    entity_id = cover_entry.entity_id
+    state = hass.states.get(entity_id)
+    assert state.state == "unavailable"
+
+    coordinator = entry.runtime_data.coordinator
+    gateway.modes[63] = "normal"
+    await coordinator.async_poll_round()
+    await hass.async_block_till_done()
+    state = hass.states.get(entity_id)
+    assert state.state == "unknown"
+    assert state.attributes["assumed_state"] is True
+    assert state.attributes["is_closed"] is None
+    assert state.attributes.get("current_position") is None
+
+    await hass.services.async_call(
+        "cover", "open_cover", {"entity_id": entity_id}, blocking=True
+    )
+    state = hass.states.get(entity_id)
+    assert state.state == "open"
+    assert state.attributes["assumed_state"] is True
+    assert state.attributes["is_closed"] is False
+
+    gateway.modes[63] = "exception"
+    for _ in range(3):
+        await coordinator.async_poll_round()
+        await hass.async_block_till_done()
+    state = hass.states.get(entity_id)
+    assert state.state == "unavailable"
+    assert coordinator.states[63].consecutive_failures == 3
+
+    gateway.modes[63] = "normal"
+    await coordinator.async_poll_round()
+    await hass.async_block_till_done()
+    state = hass.states.get(entity_id)
+    assert state.state == "unknown"
+    assert state.attributes["is_closed"] is None
+
+    await hass.services.async_call(
+        "cover", "close_cover", {"entity_id": entity_id}, blocking=True
+    )
+    assert hass.states.get(entity_id).state == "closed"
+    coordinator.gateway_lost()
+    await hass.async_block_till_done()
+    assert hass.states.get(entity_id).state == "unavailable"
+
+    coordinator.gateway_available = True
+    await coordinator.async_poll_round()
+    await hass.async_block_till_done()
+    state = hass.states.get(entity_id)
+    assert state.state == "unknown"
+    assert state.attributes["is_closed"] is None
+
+    assert await hass.config_entries.async_reload(entry.entry_id)
+    await hass.async_block_till_done()
+    reloaded_cover = next(
+        entity
+        for entity in er.async_entries_for_config_entry(registry, entry.entry_id)
+        if entity.domain == "cover"
+    )
+    assert reloaded_cover.entity_id == entity_id
+    state = hass.states.get(entity_id)
+    assert state.state == "unknown"
+    assert state.attributes["assumed_state"] is True
+    assert state.attributes["is_closed"] is None
+    assert state.attributes.get("current_position") is None
     await hass.config_entries.async_unload(entry.entry_id)
 
 

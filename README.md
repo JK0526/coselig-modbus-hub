@@ -75,7 +75,7 @@ R410 可透過硬體 Momentary 功能，對外部窗簾、捲門或車庫門控�
 
 每個 Cover 可選兩路模式（OPEN 與 CLOSE 各使用一個 Relay，STOP 自動同時觸發兩者）或三路模式（OPEN、STOP、CLOSE 各使用一個 Relay）。Relay 可任意選擇，不必連續排列；未配置給 Cover 的 R410 Relay 仍作為一般 Switch。每個 Cover 可設定 0.1–25.0 秒脈衝時間，預設 0.5 秒，由 R410 硬體計時。
 
-此 Cover 是命令介面，沒有位置回授：Home Assistant 不會推測開啟、關閉、移動狀態或位置。R410 Cover 硬體驗收已通過；驗收範圍記錄於 [硬體驗收報告](docs/v1.5.0-r410-cover-acceptance.md)。
+此 Cover 沒有實體位置回授。成功送出的 HA OPEN／CLOSE 命令會以 assumed state 顯示為 open／closed，代表「最後一次成功發出的 HA 命令」，不代表門體實際位置；不會推測位置百分比、移動狀態、行程時間或最終實體位置。STOP、整合重新載入，以及 Gateway 或 R410 Slave 不可用後恢復連線時，狀態會回到 unknown。R410 Cover 硬體驗收已通過；驗收範圍記錄於 [硬體驗收報告](docs/v1.5.0-r410-cover-acceptance.md)。
 
 ## 輪詢設定
 
@@ -109,7 +109,7 @@ Backend TraceBuffer 保留最多 **200 筆**，目前頁面另暫存最多 **100
 ## 已知限制
 
 - P404／P210 無法由協議可靠自動區分，請在設定時指定正確型號。
-- R410 Momentary Cover 沒有位置回授，狀態保持 unknown；方向控制、安全與限位由外部乾接點控制器負責。硬體驗收範圍與安全界線請參考 [驗收報告](docs/v1.5.0-r410-cover-acceptance.md)。
+- R410 Momentary Cover 沒有實體位置回授；open／closed 只表示最後一次成功發出的 HA 命令。STOP、重新載入或通訊恢復後狀態為 unknown；方向控制、安全與限位由外部乾接點控制器負責。硬體驗收範圍與安全界線請參考 [驗收報告](docs/v1.5.0-r410-cover-acceptance.md)。
 - S402 只提供四路 DI 單擊事件；不提供按下／放開、雙擊或長按事件，也無法推斷單顆 S402 的在線狀態。
 - S402 4x 模式會保留普通 Modbus Slave #1；同一 Gateway／Bus 不得同時設定普通 Slave #1。
 - R410 DI 目前不提供實體。
