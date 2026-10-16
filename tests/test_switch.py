@@ -123,7 +123,8 @@ async def test_queue_latest_wins_independent_and_control_priority(relays, gatewa
         (1, 3, 0x082A),
     ]
     assert gateway.coils[70][:2] == [True, True]
-    assert coordinator.transport.capacity == 32
+    assert coordinator.transport.stateful_capacity == 256
+    assert coordinator.transport.action_capacity == 32
 
 
 async def test_r410_native_registry_poll_zero_reload_options_rescan(

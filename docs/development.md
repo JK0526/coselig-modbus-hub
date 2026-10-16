@@ -1,6 +1,6 @@
-# v1.4.0 開發與維護指南
+# 開發與維護指南
 
-更新：2026-10-15。本文描述 v1.4.0 架構、Runtime 行為、維護界線與可重現驗證方式。S402 實機驗收已依已回報項目通過並核准 v1.4.0 發布；未回報的硬體情境列於 [S402 驗收紀錄](v1.4.0-s402-acceptance.md)。使用者操作請看 [README](../README.md)；版本差異以 [GitHub Releases](https://github.com/JK0526/coselig-modbus-hub/releases) 與各版 Release Notes 為準。歷史問題盤點保留在 `docs/specs/`，不作新版規範。
+更新：2026-10-16。本文描述目前架構、Runtime 行為、維護界線與可重現驗證方式；排程容量與語意按 v1.6.0-beta.1 更新。S402 實機驗收已依已回報項目通過並核准 v1.4.0 發布；未回報的硬體情境列於 [S402 驗收紀錄](v1.4.0-s402-acceptance.md)。使用者操作請看 [README](../README.md)；版本差異以 [GitHub Releases](https://github.com/JK0526/coselig-modbus-hub/releases) 與各版 Release Notes 為準。歷史問題盤點保留在 `docs/specs/`，不作新版規範。
 
 ## 架構與模組責任
 
@@ -55,7 +55,9 @@ Scanner 不替 P404／P210 猜測型號，型號由使用者確認。若 Entry �
 
 ## Runtime、Polling 與控制順序
 
-每個 Transport 使用一條 TCP socket 與一個 worker，同時間最多一筆在途請求。控制請求優先於 Poll。控制 queue 有界為 32；相同邏輯 key 的 pending command 使用 latest-wins，新 command 取代尚未執行的舊命令並回報 superseded。已送出的 ADU 不會撤回。Coordinator 逐 Slave 發送並等待單筆 poll，不建立 poll backlog。
+每個 Gateway 的 Transport 使用一條 TCP socket、一個 worker 與一份共享的 `OrderedDict` 控制排程，同時間最多一筆 Modbus request 在途。Stateful controls 以 `CommandKey` 合併，最多保留 256 個不同 pending keys；同 key 最新值取代尚未送出的舊值，並保留原排程位置。此容量計的是命令 key，不等於實體設備或迴路數；例如一個 CCT output 可使用亮度與色溫兩個 key。已送出的 ADU 不會撤回；同 key 新命令會排在進行中的請求之後。
+
+R410 Cover actions 以獨立容量最多保留 32 個 pending `ActionSlot`，不合併、嚴格 FIFO，每個已接受 action 只送出一次。Stateful 與 Action 配額互不占用，因此最多可有 288 個 pending controls；兩類仍按同一份全域順序交錯送出，並非各自建立 worker 或 bus。Control 優先於 Poll，Poll queue 不累積逾期輪次；Coordinator 逐 Slave 發送並等待單筆 poll。Gateway／bus failure 時丟棄所有尚未送出的 stateful controls 與 actions，不在 reconnect 後重播。
 
 Transport 啟動後另建立一個長期 RX task，這是該 socket 唯一呼叫 `protocol.receive()` 的地方；TX worker 不讀 StreamReader。每個 `_exchange()` 在寫 request 前建立唯一 pending response Future，再寫入並等待原始 timeout。RX task 讀完整 RTU frame 後先檢查保留 signature `01 06 01 A0`：signature candidate 永遠消耗並交給 pure S402 parser，絕不完成普通 pending Future；有效且已設定 ID 的事件交給 Hub listener，unknown ID 只保留 EVENT trace。其他 frame 才交給 pending Future，原 `_exchange()` 接著呼叫既有 `validate(request, response)`。插入任意數量 S402 event 都不 await automation、不重置 request timeout，也不增加 Modbus request counters。
 
@@ -118,6 +120,8 @@ Monitor 的「暫停輪詢」只改 Coordinator 的執行期狀態，不寫入 C
 開發依賴由 `pyproject.toml`／`uv.lock` 固定。基準環境：Home Assistant **2026.10.1**、Python **3.14.7**、pytest-homeassistant-custom-component **0.13.372**。v1.3.3 基線：**440 Python tests、36 frontend tests、99.57% branch coverage**；Config Flow line／branch coverage 要求 100%。
 
 v1.4.0 自動驗證結果：**520 Python tests、39 frontend tests、99.75% branch coverage、Config Flow line／branch coverage 100%**。S402 實機驗收結果與未確認情境分列於 [驗收紀錄](v1.4.0-s402-acceptance.md)；自動測試不作為硬體驗收證據。
+
+v1.6.0-beta.1 scheduler 驗證結果：**603 Python tests、39 frontend tests、99.96% branch coverage、Config Flow line／branch coverage 100%**。Gateway 全屋負載與實機 scheduler acceptance 仍為 **PENDING**，紀錄於 [驗收清單](v1.6.0-scheduler-acceptance.md)；自動測試不作為硬體驗收證據。
 
 本機檢查命令：
 
