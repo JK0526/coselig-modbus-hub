@@ -266,12 +266,10 @@ async def test_register_versioned_static_panel(hass):
         await async_register_monitor(hass)
     assert register.call_count == 4
     paths = hass.http.async_register_static_paths.call_args.args[0]
-    assert paths[0].url_path == "/coselig_modbus_hub/monitor-1.6.0-beta.1.js"
+    assert paths[0].url_path == "/coselig_modbus_hub/monitor-1.6.0.js"
     panel = hass.data[DATA_PANELS]["coselig-modbus-monitor"]
     assert panel.require_admin
-    assert panel.config["_panel_custom"]["module_url"].endswith(
-        "monitor-1.6.0-beta.1.js"
-    )
+    assert panel.config["_panel_custom"]["module_url"].endswith("monitor-1.6.0.js")
 
 
 async def test_subscription_survives_runtime_reload_and_no_change(

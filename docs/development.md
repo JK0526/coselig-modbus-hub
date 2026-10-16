@@ -1,6 +1,6 @@
 # 開發與維護指南
 
-更新：2026-10-16。本文描述目前架構、Runtime 行為、維護界線與可重現驗證方式；排程容量與語意按 v1.6.0-beta.1 更新。S402 實機驗收已依已回報項目通過並核准 v1.4.0 發布；未回報的硬體情境列於 [S402 驗收紀錄](v1.4.0-s402-acceptance.md)。使用者操作請看 [README](../README.md)；版本差異以 [GitHub Releases](https://github.com/JK0526/coselig-modbus-hub/releases) 與各版 Release Notes 為準。歷史問題盤點保留在 `docs/specs/`，不作新版規範。
+更新：2026-10-16。本文描述目前架構、Runtime 行為、維護界線與可重現驗證方式；排程容量與語意按 v1.6.0 更新。S402 實機驗收已依已回報項目通過並核准 v1.4.0 發布；未回報的硬體情境列於 [S402 驗收紀錄](v1.4.0-s402-acceptance.md)。使用者操作請看 [README](../README.md)；版本差異以 [GitHub Releases](https://github.com/JK0526/coselig-modbus-hub/releases) 與各版 Release Notes 為準。歷史問題盤點保留在 `docs/specs/`，不作新版規範。
 
 ## 架構與模組責任
 
@@ -121,7 +121,7 @@ Monitor 的「暫停輪詢」只改 Coordinator 的執行期狀態，不寫入 C
 
 v1.4.0 自動驗證結果：**520 Python tests、39 frontend tests、99.75% branch coverage、Config Flow line／branch coverage 100%**。S402 實機驗收結果與未確認情境分列於 [驗收紀錄](v1.4.0-s402-acceptance.md)；自動測試不作為硬體驗收證據。
 
-v1.6.0-beta.1 scheduler 驗證結果：**603 Python tests、39 frontend tests、99.96% branch coverage、Config Flow line／branch coverage 100%**。Gateway 全屋負載與實機 scheduler acceptance 仍為 **PENDING**，紀錄於 [驗收清單](v1.6.0-scheduler-acceptance.md)；自動測試不作為硬體驗收證據。
+v1.6.0 scheduler 軟體／自動化驗收：**PASS**，包含 **603 Python tests、39 frontend tests、99.96% branch coverage、Config Flow line／branch coverage 100%**。大型 100+ circuits 實體部署壓力測試未直接進行；此限制與自動化軟體驗收狀態分開記錄於[驗收清單](v1.6.0-scheduler-acceptance.md)。
 
 本機檢查命令：
 
