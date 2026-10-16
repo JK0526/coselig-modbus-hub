@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 
 from homeassistant.components.cover import CoverEntity, CoverEntityFeature
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
@@ -30,9 +30,10 @@ async def async_setup_entry(
 
 
 class CoseligR410Cover(CoordinatorEntity[Coordinator], CoverEntity):
-    """A momentary-command Cover with intentionally unknown physical state."""
+    """A momentary-command Cover with assumed command state and no feedback."""
 
     _attr_has_entity_name = True
+    _attr_assumed_state = True
     _attr_supported_features = (
         CoverEntityFeature.OPEN | CoverEntityFeature.CLOSE | CoverEntityFeature.STOP
     )
@@ -52,6 +53,7 @@ class CoseligR410Cover(CoordinatorEntity[Coordinator], CoverEntity):
         self._attr_device_info = DeviceInfo(
             identifiers={cover_device_identifier(entry_id, config.slave)}
         )
+        self._last_available = self.available
 
     @property
     def available(self) -> bool:
@@ -59,6 +61,15 @@ class CoseligR410Cover(CoordinatorEntity[Coordinator], CoverEntity):
             self.coordinator.gateway_available
             and self.coordinator.states[self.config.slave].available
         )
+
+    @callback
+    def _handle_coordinator_update(self) -> None:
+        """Drop assumed state across any loss and recovery of availability."""
+        available = self.available
+        if not available or not self._last_available:
+            self._attr_is_closed = None
+        self._last_available = available
+        self.async_write_ha_state()
 
     async def _action(self, action: str) -> None:
         if not self.available or self.coordinator.scanning:
@@ -76,6 +87,13 @@ class CoseligR410Cover(CoordinatorEntity[Coordinator], CoverEntity):
             raise HomeAssistantError(
                 "Coselig R410 momentary command failed; no automatic retry was sent"
             ) from error
+        if action == "open":
+            self._attr_is_closed = False
+        elif action == "close":
+            self._attr_is_closed = True
+        else:
+            self._attr_is_closed = None
+        self.async_write_ha_state()
 
     async def async_open_cover(self, **kwargs: object) -> None:
         await self._action("open")
