@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import re
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 from uuid import uuid4
@@ -66,6 +67,10 @@ def _translation_strings(value):
             yield from _translation_strings(child)
     elif isinstance(value, str):
         yield value
+
+
+def _translation_placeholders(value):
+    return set(re.findall(r"{([A-Za-z_][A-Za-z0-9_]*)}", value))
 
 
 async def _options_ready(options):
@@ -413,6 +418,73 @@ def test_manage_device_translation_steps_use_only_static_text(
     assert empty["menu_options"]["back_to_device_management"] == expected_back_label
 
 
+@pytest.mark.parametrize(
+    "filename", ["strings.json", "translations/en.json", "translations/zh-Hant.json"]
+)
+def test_device_oriented_options_pages_have_static_titles_and_matching_descriptions(
+    filename,
+):
+    path = Path("custom_components/coselig_modbus_hub") / filename
+    steps = json.loads(path.read_text())["options"]["step"]
+    expected_titles = (
+        {
+            "device_menu": "裝置管理",
+            "s402_device_management": "S402 裝置",
+            "model": "確認裝置型號",
+            "groups": "輸出模式",
+        }
+        if filename.endswith("zh-Hant.json")
+        else {
+            "device_menu": "Device management",
+            "s402_device_management": "S402 device",
+            "model": "Confirm device model",
+            "groups": "Output mode",
+        }
+    )
+    device_oriented_steps = {
+        "device_management",
+        "add_device",
+        "manage_devices",
+        "manage_devices_empty",
+        "device_menu",
+        "s402_device_management",
+        "r410_output_configuration",
+        "manage_r410_covers",
+    }
+
+    for step_id in device_oriented_steps:
+        assert "{" not in steps[step_id]["title"]
+        assert "}" not in steps[step_id]["title"]
+    for step_id, expected_title in expected_titles.items():
+        assert steps[step_id]["title"] == expected_title
+
+    assert _translation_placeholders(steps["device_menu"]["description"]) == {
+        "device",
+        "details",
+    }
+    assert _translation_placeholders(
+        steps["s402_device_management"]["description"]
+    ) == {"device", "details"}
+    assert _translation_placeholders(
+        steps["r410_output_configuration"]["description"]
+    ) == {"allocations", "reason"}
+    assert _translation_placeholders(steps["model"]["description"]) == {
+        "slave",
+        "family",
+        "recommended",
+        "model_reason",
+    }
+    assert _translation_placeholders(steps["groups"]["description"]) == {"slave"}
+    assert all(
+        not _translation_placeholders(step.get("title", "")) for step in steps.values()
+    )
+
+    # The legacy Config Flow title interpolation remains unchanged.
+    config_steps = json.loads(path.read_text())["config"]["step"]
+    assert _translation_placeholders(config_steps["model"]["title"]) == {"slave"}
+    assert _translation_placeholders(config_steps["groups"]["title"]) == {"slave"}
+
+
 async def test_s402_flows_handle_missing_pending_and_configured_list_safely(
     flow, options, entry
 ):
@@ -686,6 +758,10 @@ async def test_unified_device_selector_routes_each_device_to_its_capabilities(
     assert entry.options == original
 
     p404 = await _select_modbus(options, 51)
+    assert p404["description_placeholders"] == {
+        "device": "P404 #51",
+        "details": "4-channel PWM dimmer",
+    }
     assert p404["menu_options"] == [
         "output_mode",
         "remove_managed_device",
@@ -699,14 +775,23 @@ async def test_unified_device_selector_routes_each_device_to_its_capabilities(
 
     p210 = await options.async_step_manage_devices({"device": "modbus:22"})
     assert p210["step_id"] == "device_menu"
+    assert p210["description_placeholders"] == {
+        "device": "P210 #22",
+        "details": "2-channel PWM dimmer",
+    }
     assert (await options.async_step_output_mode())["data_schema"]({}) == {
         "group_a": "cct"
     }
     assert entry.options == original
 
     r410 = await options.async_step_manage_devices({"device": "modbus:63"})
+    assert r410["description_placeholders"] == {
+        "device": "R410 #63",
+        "details": "4-channel Relay",
+    }
     assert r410["menu_options"][0] == "r410_output_configuration"
     page = await options.async_step_r410_output_configuration()
+    assert set(page["description_placeholders"]) == {"allocations", "reason"}
     assert "Garage" in page["description_placeholders"]["allocations"]
     assert page["menu_options"] == [
         "add_r410_cover",
@@ -716,7 +801,10 @@ async def test_unified_device_selector_routes_each_device_to_its_capabilities(
     assert entry.options == original
 
     s402_page = await _select_s402(options, 7)
-    assert s402_page["description_placeholders"]["details"] == "DI1\nDI2\nDI3\nDI4"
+    assert s402_page["description_placeholders"] == {
+        "device": "S402 #7",
+        "details": "DI1\nDI2\nDI3\nDI4",
+    }
     assert s402_page["menu_options"] == [
         "remove_managed_s402",
         "back_to_device_list",
