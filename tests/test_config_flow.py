@@ -764,15 +764,30 @@ async def test_reconfigure_flow_remains_available_for_gateway_host_and_port(
     form = await flow.async_step_reconfigure()
     assert form["step_id"] == "reconfigure"
     assert form["data_schema"]({}) == entry.data
-    with patch(
-        "custom_components.coselig_modbus_hub.config_flow.validate_gateway",
-        new=AsyncMock(return_value={"host": "new-gateway.local", "port": 1502}),
+    with (
+        patch(
+            "custom_components.coselig_modbus_hub.config_flow.validate_gateway",
+            new=AsyncMock(return_value={"host": "new-gateway.local", "port": 1502}),
+        ),
+        patch.object(
+            flow,
+            "async_update_reload_and_abort",
+            return_value={
+                "type": FlowResultType.ABORT,
+                "reason": "reconfigure_successful",
+            },
+        ) as update,
     ):
         result = await flow.async_step_reconfigure(
             {"host": "new-gateway.local", "port": 1502}
         )
     assert result["type"] == FlowResultType.ABORT
     assert result["reason"] == "reconfigure_successful"
+    update.assert_called_once_with(
+        entry,
+        data={"host": "new-gateway.local", "port": 1502},
+        title="Coselig new-gateway.local",
+    )
 
 
 async def test_add_r410_jumps_to_summary_and_does_not_replace_existing(options):
