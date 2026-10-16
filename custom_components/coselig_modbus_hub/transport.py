@@ -9,7 +9,11 @@ from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 
-from .const import CONTROL_CAPACITY, DEFAULT_TIMEOUT
+from .const import (
+    ACTION_CONTROL_CAPACITY,
+    DEFAULT_TIMEOUT,
+    STATEFUL_CONTROL_CAPACITY,
+)
 from .protocol import (
     CRCError,
     DeviceException,
@@ -68,19 +72,23 @@ class Transport:
         host: str,
         port: int,
         timeout: float = DEFAULT_TIMEOUT,
-        capacity: int = CONTROL_CAPACITY,
+        stateful_capacity: int = STATEFUL_CONTROL_CAPACITY,
+        action_capacity: int = ACTION_CONTROL_CAPACITY,
         trace: ProtocolTraceBuffer | None = None,
         on_s402_event: S402Callback | None = None,
         on_connection_lost: ConnectionLostCallback | None = None,
     ) -> None:
-        if not host or not 1 <= port <= 65535 or timeout <= 0 or capacity < 1:
+        if (
+            not host
+            or not 1 <= port <= 65535
+            or timeout <= 0
+            or stateful_capacity < 1
+            or action_capacity < 1
+        ):
             raise ValueError("Invalid transport configuration")
-        self.host, self.port, self.timeout, self.capacity = (
-            host,
-            port,
-            timeout,
-            capacity,
-        )
+        self.host, self.port, self.timeout = host, port, timeout
+        self.stateful_capacity = stateful_capacity
+        self.action_capacity = action_capacity
         self.statistics = Statistics()
         self.trace = trace
         self.on_s402_event = on_s402_event
@@ -109,7 +117,27 @@ class Transport:
 
     @property
     def queue_depth(self) -> int:
-        return len(self._controls) + len(self._polls)
+        return self.control_depth + self.poll_depth
+
+    @property
+    def control_depth(self) -> int:
+        """Number of pending controls in the shared ordered schedule."""
+        return len(self._controls)
+
+    @property
+    def stateful_depth(self) -> int:
+        """Number of distinct pending CommandKeys, excluding in-flight work."""
+        return sum(not isinstance(key, ActionSlot) for key in self._controls)
+
+    @property
+    def action_depth(self) -> int:
+        """Number of pending non-coalescing ActionSlots."""
+        return sum(isinstance(key, ActionSlot) for key in self._controls)
+
+    @property
+    def poll_depth(self) -> int:
+        """Number of queued polls; the in-flight request is not counted."""
+        return len(self._polls)
 
     async def connect(self) -> None:
         if self._closed:
@@ -265,8 +293,8 @@ class Transport:
         if poll:
             self._polls.append(item)
         elif action:
-            if len(self._controls) >= self.capacity:
-                _LOGGER.warning("Control queue full; new action rejected")
+            if self.action_depth >= self.action_capacity:
+                _LOGGER.warning("Action queue full; new action rejected")
                 raise asyncio.QueueFull
             self._next_action_sequence += 1
             self._controls[ActionSlot(self._next_action_sequence)] = item
@@ -276,8 +304,8 @@ class Transport:
                 old = self._controls[key]
                 if not old.future.done():
                     old.future.set_result(None)  # Explicitly superseded; no write sent.
-            elif len(self._controls) >= self.capacity:
-                _LOGGER.warning("Control queue full; new command rejected")
+            elif self.stateful_depth >= self.stateful_capacity:
+                _LOGGER.warning("Stateful control queue full; new command rejected")
                 raise asyncio.QueueFull
             self._controls[key] = item
         self.statistics.queue_peak = max(self.statistics.queue_peak, self.queue_depth)

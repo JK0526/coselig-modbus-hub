@@ -23,9 +23,50 @@ from tests.dimmer_packets import read, write
 
 @pytest.fixture
 async def transport(gateway):
-    transport = Transport("127.0.0.1", gateway.port, timeout=0.04, capacity=2)
+    transport = Transport(
+        "127.0.0.1",
+        gateway.port,
+        timeout=0.04,
+        stateful_capacity=2,
+        action_capacity=2,
+    )
     yield transport
     await transport.close()
+
+
+async def _wait_for_queue(
+    transport, *, stateful=None, actions=None, polls=None, total=None
+):
+    for _ in range(1000):
+        if (
+            (stateful is None or transport.stateful_depth == stateful)
+            and (actions is None or transport.action_depth == actions)
+            and (polls is None or transport.poll_depth == polls)
+            and (total is None or transport.queue_depth == total)
+        ):
+            return
+        await asyncio.sleep(0)
+    raise AssertionError(
+        "Transport queue did not reach expected depth: "
+        f"stateful={transport.stateful_depth}, actions={transport.action_depth}, "
+        f"polls={transport.poll_depth}, total={transport.queue_depth}"
+    )
+
+
+def _circuit_command(index, value):
+    slave = 1 + index // 4
+    channel = index % 4
+    key = (slave, f"ch{channel + 1}", "brightness")
+    request = write(slave, 0x082A + channel, value)
+    return request, key
+
+
+def _control_task(transport, request, key):
+    return asyncio.create_task(transport.submit(request, key=key))
+
+
+def _wire_brightness(raw):
+    return 0x0500 | raw
 
 
 async def test_fragmentation_persistent_socket(gateway, transport):
@@ -99,7 +140,7 @@ async def test_capacity_coalesces_and_rejects(gateway, transport, caplog):
     ],
 )
 async def test_action_controls_are_fifo_and_never_coalesce(gateway, values):
-    transport = Transport("127.0.0.1", gateway.port, timeout=0.04, capacity=4)
+    transport = Transport("127.0.0.1", gateway.port, timeout=0.04, action_capacity=4)
     gateway.block = True
     try:
         first = asyncio.create_task(transport.submit(read(1, 4), poll=True))
@@ -133,7 +174,7 @@ async def test_action_controls_count_toward_capacity(gateway, transport):
         for value in (0x0501, 0x0502)
     ]
     await asyncio.sleep(0)
-    assert transport.queue_depth == transport.capacity == 2
+    assert transport.action_depth == transport.action_capacity == 2
     with pytest.raises(asyncio.QueueFull):
         await transport.submit_action(write_single_register(1, 0x019B, 0x0503))
     gateway.release.set()
@@ -158,7 +199,7 @@ async def test_action_controls_use_default_capacity_32(gateway):
             if transport.queue_depth == 32:
                 break
             await asyncio.sleep(0)
-        assert transport.capacity == transport.queue_depth == 32
+        assert transport.action_capacity == transport.action_depth == 32
         with pytest.raises(asyncio.QueueFull):
             await transport.submit_action(write_single_register(8, 0x019B, 0x0501))
         gateway.release.set()
@@ -166,6 +207,377 @@ async def test_action_controls_use_default_capacity_32(gateway):
         assert [value for _slave, _address, value in gateway.register_writes] == [
             0x0500 | relay for relay in range(1, 33)
         ]
+    finally:
+        await transport.close()
+
+
+async def test_stateful_capacity_is_256_distinct_pending_keys(gateway):
+    transport = Transport("127.0.0.1", gateway.port, timeout=0.5)
+    gateway.block = True
+    try:
+        in_flight = asyncio.create_task(transport.submit(read(247, 4), poll=True))
+        await gateway.arrived.wait()
+        pending = [
+            _control_task(transport, *_circuit_command(index, index % 101))
+            for index in range(256)
+        ]
+        await _wait_for_queue(transport, stateful=256, actions=0, total=256)
+        assert transport.stateful_capacity == 256
+        assert transport.control_depth == transport.queue_depth == 256
+        with pytest.raises(asyncio.QueueFull):
+            request, key = _circuit_command(256, 80)
+            await transport.submit(request, key=key)
+
+        gateway.release.set()
+        await asyncio.gather(in_flight, *pending)
+        assert len(gateway.register_writes) == 256
+    finally:
+        await transport.close()
+
+
+async def test_full_stateful_capacity_allows_replacement_in_original_position(
+    gateway,
+):
+    transport = Transport("127.0.0.1", gateway.port, timeout=1)
+    gateway.block = True
+    try:
+        in_flight = asyncio.create_task(transport.submit(read(247, 4), poll=True))
+        await gateway.arrived.wait()
+        pending = [
+            _control_task(transport, *_circuit_command(index, 10))
+            for index in range(256)
+        ]
+        await _wait_for_queue(transport, stateful=256)
+        replacement_request, replacement_key = _circuit_command(0, 88)
+        replacement = _control_task(transport, replacement_request, replacement_key)
+        await _wait_for_queue(transport, stateful=256)
+        assert await pending[0] is None
+        assert transport._controls[replacement_key].request == replacement_request
+
+        gateway.release.set()
+        await asyncio.gather(in_flight, *pending, replacement)
+        writes = gateway.register_writes
+        assert len(writes) == 256
+        assert writes[0] == (1, 0x082A, _wire_brightness(88))
+        assert all(
+            value == _wire_brightness(10) for _slave, _address, value in writes[1:]
+        )
+    finally:
+        await transport.close()
+
+
+async def test_one_hundred_circuit_burst_is_accepted_and_sent_once(gateway):
+    transport = Transport("127.0.0.1", gateway.port, timeout=2)
+    gateway.block = True
+    try:
+        in_flight = asyncio.create_task(transport.submit(read(247, 4), poll=True))
+        await gateway.arrived.wait()
+        pending = [
+            _control_task(transport, *_circuit_command(index, index % 101))
+            for index in range(100)
+        ]
+        await _wait_for_queue(transport, stateful=100)
+        gateway.release.set()
+        await asyncio.gather(in_flight, *pending)
+        assert len(gateway.register_writes) == 100
+        assert gateway.register_writes == [
+            (
+                1 + index // 4,
+                0x082A + index % 4,
+                _wire_brightness(index % 101),
+            )
+            for index in range(100)
+        ]
+    finally:
+        await transport.close()
+
+
+async def test_user_override_replaces_unsent_stateful_command_in_burst(gateway):
+    transport = Transport("127.0.0.1", gateway.port, timeout=2)
+    gateway.block = True
+    try:
+        in_flight = asyncio.create_task(transport.submit(read(247, 4), poll=True))
+        await gateway.arrived.wait()
+        pending = [
+            _control_task(transport, *_circuit_command(index, 0))
+            for index in range(100)
+        ]
+        await _wait_for_queue(transport, stateful=100)
+        override_request, override_key = _circuit_command(50, 100)
+        override = _control_task(transport, override_request, override_key)
+        await _wait_for_queue(transport, stateful=100)
+        gateway.release.set()
+        await asyncio.gather(in_flight, *pending, override)
+        writes = gateway.register_writes
+        assert len(writes) == 100
+        assert writes[50] == (13, 0x082A + 2, _wire_brightness(100))
+        assert all(
+            value == _wire_brightness(0)
+            for index, (_slave, _address, value) in enumerate(writes)
+            if index != 50
+        )
+    finally:
+        await transport.close()
+
+
+async def test_many_same_key_updates_use_one_slot_and_send_only_latest(gateway):
+    transport = Transport("127.0.0.1", gateway.port, timeout=1)
+    gateway.block = True
+    try:
+        in_flight = asyncio.create_task(transport.submit(read(247, 4), poll=True))
+        await gateway.arrived.wait()
+        request, key = _circuit_command(0, 10)
+        updates = [_control_task(transport, request, key)]
+        for value in range(20, 101, 10):
+            update_request, update_key = _circuit_command(0, value)
+            updates.append(_control_task(transport, update_request, update_key))
+        await _wait_for_queue(transport, stateful=1, actions=0)
+        gateway.release.set()
+        results = await asyncio.gather(in_flight, *updates)
+        assert transport.stateful_depth == 0
+        assert gateway.register_writes == [(1, 0x082A, _wire_brightness(100))]
+        assert results[1:-1] == [None] * (len(updates) - 1)
+        assert results[-1] is not None
+    finally:
+        await transport.close()
+
+
+async def test_newer_same_key_command_waits_behind_in_flight_request(gateway):
+    transport = Transport("127.0.0.1", gateway.port, timeout=1)
+    gateway.block = True
+    try:
+        first_request, key = _circuit_command(0, 10)
+        first = asyncio.create_task(transport.submit(first_request, key=key))
+        await gateway.arrived.wait()
+        newer_request, _ = _circuit_command(0, 80)
+        newer = asyncio.create_task(transport.submit(newer_request, key=key))
+        await _wait_for_queue(transport, stateful=1)
+        assert not first.done()
+        gateway.release.set()
+        await asyncio.gather(first, newer)
+        assert gateway.register_writes == [
+            (1, 0x082A, _wire_brightness(10)),
+            (1, 0x082A, _wire_brightness(80)),
+        ]
+    finally:
+        await transport.close()
+
+
+async def test_independent_capacities_share_one_ordered_control_schedule(gateway):
+    transport = Transport("127.0.0.1", gateway.port, timeout=4)
+    gateway.block = True
+    try:
+        in_flight = asyncio.create_task(transport.submit(read(247, 4), poll=True))
+        await gateway.arrived.wait()
+        stateful = [
+            _control_task(transport, *_circuit_command(index, 10))
+            for index in range(256)
+        ]
+        actions = [
+            asyncio.create_task(
+                transport.submit_action(
+                    write_single_register(240, 0x019B, 0x0500 | (index + 1))
+                )
+            )
+            for index in range(32)
+        ]
+        await _wait_for_queue(transport, stateful=256, actions=32, total=288)
+        assert transport.queue_depth == transport.control_depth == 288
+        with pytest.raises(asyncio.QueueFull):
+            request, key = _circuit_command(256, 20)
+            await transport.submit(request, key=key)
+        with pytest.raises(asyncio.QueueFull):
+            await transport.submit_action(write_single_register(240, 0x019B, 0x05FF))
+
+        replacement_request, replacement_key = _circuit_command(0, 20)
+        replacement = _control_task(transport, replacement_request, replacement_key)
+        await _wait_for_queue(transport, stateful=256, actions=32, total=288)
+        gateway.release.set()
+        await asyncio.gather(in_flight, *stateful, *actions, replacement)
+        assert len(gateway.register_writes) == 288
+        action_writes = [
+            write_value
+            for _slave, address, write_value in gateway.register_writes
+            if address == 0x019B
+        ]
+        assert action_writes == [0x0500 | (index + 1) for index in range(32)]
+        assert gateway.register_writes[0] == (1, 0x082A, _wire_brightness(20))
+    finally:
+        await transport.close()
+
+
+async def test_stateful_action_mixed_order_and_replacement_position(gateway):
+    transport = Transport("127.0.0.1", gateway.port, timeout=1)
+    gateway.block = True
+    try:
+        in_flight = asyncio.create_task(transport.submit(read(247, 4), poll=True))
+        await gateway.arrived.wait()
+        first_request, first_key = _circuit_command(0, 10)
+        second_request, second_key = _circuit_command(1, 20)
+        first = _control_task(transport, first_request, first_key)
+        action1 = asyncio.create_task(
+            transport.submit_action(write_single_register(240, 0x019B, 0x0501))
+        )
+        second = _control_task(transport, second_request, second_key)
+        action2 = asyncio.create_task(
+            transport.submit_action(write_single_register(240, 0x019B, 0x0502))
+        )
+        await _wait_for_queue(transport, stateful=2, actions=2, total=4)
+        replacement_request, _ = _circuit_command(0, 80)
+        replacement = _control_task(transport, replacement_request, first_key)
+        await _wait_for_queue(transport, stateful=2, actions=2, total=4)
+        gateway.release.set()
+        await asyncio.gather(in_flight, first, action1, second, action2, replacement)
+        assert gateway.requests[1:] == [
+            replacement_request,
+            write_single_register(240, 0x019B, 0x0501),
+            second_request,
+            write_single_register(240, 0x019B, 0x0502),
+        ]
+    finally:
+        await transport.close()
+
+
+@pytest.mark.parametrize(
+    ("mode", "error"),
+    [("timeout", TimeoutError), ("disconnect", GatewayError), ("crc", CRCError)],
+)
+async def test_mixed_pending_controls_are_discarded_and_never_replayed(
+    gateway, mode, error
+):
+    transport = Transport("127.0.0.1", gateway.port, timeout=0.05)
+    gateway.block = True
+    gateway.modes[1] = mode
+    try:
+        first_request, first_key = _circuit_command(0, 10)
+        first = asyncio.create_task(transport.submit(first_request, key=first_key))
+        await gateway.arrived.wait()
+        action1 = asyncio.create_task(
+            transport.submit_action(write_single_register(240, 0x019B, 0x0501))
+        )
+        pending_request, pending_key = _circuit_command(4, 20)
+        stateful = asyncio.create_task(
+            transport.submit(pending_request, key=pending_key)
+        )
+        action2 = asyncio.create_task(
+            transport.submit_action(write_single_register(240, 0x019B, 0x0502))
+        )
+        second_pending_request, second_pending_key = _circuit_command(8, 30)
+        second_stateful = asyncio.create_task(
+            transport.submit(second_pending_request, key=second_pending_key)
+        )
+        await _wait_for_queue(transport, stateful=2, actions=2, total=4)
+        gateway.release.set()
+        with pytest.raises(error):
+            await first
+        for task in (action1, stateful, action2, second_stateful):
+            with pytest.raises(OfflineError):
+                await task
+        writes_before_reconnect_poll = len(gateway.register_writes)
+        gateway.modes.clear()
+        await transport.submit(read(247, 4), poll=True)
+        assert len(gateway.register_writes) == writes_before_reconnect_poll
+        assert [request[1] for request in gateway.requests].count(6) == 1
+        assert transport.stateful_depth == transport.action_depth == 0
+    finally:
+        await transport.close()
+
+
+async def test_control_burst_drains_before_waiting_polls_and_polling_resumes(gateway):
+    transport = Transport("127.0.0.1", gateway.port, timeout=2)
+    gateway.block = True
+    try:
+        in_flight = asyncio.create_task(transport.submit(read(247, 4), poll=True))
+        await gateway.arrived.wait()
+        polls = [
+            asyncio.create_task(transport.submit(read(slave, 4), poll=True))
+            for slave in (245, 246)
+        ]
+        controls = [
+            _control_task(transport, *_circuit_command(index, 50))
+            for index in range(100)
+        ]
+        await _wait_for_queue(transport, stateful=100, polls=2)
+        gateway.release.set()
+        await asyncio.gather(in_flight, *polls, *controls)
+        functions = [request[1] for request in gateway.requests]
+        assert functions[0] == 3
+        first_queued_poll = next(
+            index for index, request in enumerate(gateway.requests) if request[0] == 245
+        )
+        last_control = max(
+            index for index, request in enumerate(gateway.requests) if request[1] == 6
+        )
+        assert last_control < first_queued_poll
+        assert [request[0] for request in gateway.requests[-2:]] == [245, 246]
+    finally:
+        await transport.close()
+
+
+async def test_scanner_exclusive_waits_for_both_pending_control_classes(gateway):
+    transport = Transport("127.0.0.1", gateway.port, timeout=2)
+    gateway.block = True
+    scan_entered = asyncio.Event()
+    try:
+        in_flight = asyncio.create_task(transport.submit(read(247, 4), poll=True))
+        await gateway.arrived.wait()
+        stateful_request, stateful_key = _circuit_command(0, 20)
+        stateful = asyncio.create_task(
+            transport.submit(stateful_request, key=stateful_key)
+        )
+        action = asyncio.create_task(
+            transport.submit_action(write_single_register(240, 0x019B, 0x0501))
+        )
+        await _wait_for_queue(transport, stateful=1, actions=1)
+
+        async def scan_one_slave():
+            async with transport.exclusive():
+                scan_entered.set()
+                return await transport.submit(read(245, 1), exclusive=True)
+
+        scan = asyncio.create_task(scan_one_slave())
+        await asyncio.sleep(0)
+        assert not scan_entered.is_set()
+        gateway.release.set()
+        await asyncio.gather(in_flight, stateful, action)
+        assert await scan
+        await scan_entered.wait()
+        assert [request[1] for request in gateway.requests] == [3, 6, 6, 3]
+    finally:
+        await transport.close()
+
+
+async def test_s402_events_during_control_burst_do_not_consume_capacity(gateway):
+    events = []
+    transport = Transport(
+        "127.0.0.1", gateway.port, timeout=2, on_s402_event=events.append
+    )
+    gateway.block = True
+    try:
+        in_flight = asyncio.create_task(transport.submit(read(247, 4), poll=True))
+        await gateway.arrived.wait()
+        controls = [
+            _control_task(transport, *_circuit_command(index, 50))
+            for index in range(100)
+        ]
+        await _wait_for_queue(transport, stateful=100)
+        event_arrived = asyncio.Event()
+        transport.on_s402_event = lambda event: (
+            events.append(event),
+            event_arrived.set(),
+        )
+        await _push(gateway, b"".join(_s402_packet(7, bit) for bit in (1, 2, 4, 8)))
+        await asyncio.wait_for(event_arrived.wait(), 1)
+        assert transport.stateful_depth == 100
+        assert transport.action_depth == 0
+        assert transport.statistics.successful_requests == 0
+        assert transport.statistics.failed_requests == 0
+        gateway.release.set()
+        await asyncio.gather(in_flight, *controls)
+        assert events == [S402Event(7, di) for di in range(1, 5)]
+        assert transport.statistics.successful_requests == 101
+        assert transport.statistics.failed_requests == 0
+        assert transport.stateful_depth == transport.action_depth == 0
     finally:
         await transport.close()
 
@@ -303,10 +715,19 @@ async def test_cancelled_pending_never_sent(gateway, transport):
         assert len(gateway.requests) == 1
 
 
-@pytest.mark.parametrize("args", [("", 502), ("x", 0), ("x", 502, 0), ("x", 502, 1, 0)])
-def test_invalid_configuration(args):
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"host": "", "port": 502},
+        {"host": "x", "port": 0},
+        {"host": "x", "port": 502, "timeout": 0},
+        {"host": "x", "port": 502, "stateful_capacity": 0},
+        {"host": "x", "port": 502, "action_capacity": 0},
+    ],
+)
+def test_invalid_configuration(kwargs):
     with pytest.raises(ValueError):
-        Transport(*args)
+        Transport(**kwargs)
 
 
 async def test_connect_error(socket_enabled):
