@@ -2,7 +2,7 @@
 
 將 Coselig P404、P210、R410 與 S402，透過 RS485 → TCP Gateway 原生整合進 Home Assistant。整合建立原生 Light／Switch／Event 與 Device，使用 Home Assistant Config Flow 設定，無需 MQTT、Node-RED 或 YAML，並內建管理員限定的 Modbus Monitor。
 
-目前穩定版本：**v1.5.0**。R410 Cover 硬體驗收與 device-oriented Options Flow 實機驗證均已通過。Config Entry schema 維持 **2.1**。
+目前穩定版本：**v1.6.0**。R410 Cover 硬體驗收與 device-oriented Options Flow 實機驗證均已通過。Scheduler 容量、排序、latest-wins、Action FIFO、失敗清理、Poll、Scanner 與 S402 routing 已通過軟體／自動化驗證；100+ circuits 的大型實體部署壓力測試未直接進行。Config Entry schema 維持 **2.1**。
 
 ## 功能特色
 
@@ -13,6 +13,8 @@
 - 建立原生 Home Assistant Device、Light 與 Switch。
 - 可修改既有設備型號與輸出模式，也可個別移除設備。
 - 背景 Polling 週期可調整或停用。
+- 每個 Gateway 最多排入 256 個不同的 pending Stateful CommandKey；同 key 的未送出命令採 latest-wins。
+- R410 Cover Action 有獨立 32 筆 FIFO 容量；Stateful 與 Action 共用全域控制順序，實際 Modbus 通訊仍維持單一 request in flight。
 - 管理員可在 Monitor 暫停／恢復背景 Poll，且不會修改儲存的 Poll 週期；Control 與 S402 EVENT 維持運作。
 - 內建 Monitor 可查看通訊紀錄，管理員可控制執行期背景 Poll。
 - 可建立多個 Gateway Config Entry，分別管理不同的 RS485 Bus。
@@ -26,7 +28,7 @@
 | Coselig R410 | Switch／Cover | Relay 1–4；可將未使用 Relay 配置為瞬時 Cover 控制 |
 | Coselig S402 | Event | DI1–DI4 單擊事件（`PRESS_END`） |
 
-P404 的 Group A 對應 CH1／CH2，Group B 對應 CH3／CH4；每組可設成兩路單獨調光或一組雙色溫。P210 只有 Group A。R410 的 DI 目前不提供實體。S402 的 DI 是無狀態單擊事件，不輪詢，也不代表 S402 在線健康狀態。
+P404 的 Group A 對應 CH1／CH2，Group B 對應 CH3／CH4；每組可設成兩路單獨調光或一組雙色溫。P210 只有 Group A。S402 的 DI 是無狀態單擊事件，不輪詢，也不代表 S402 在線健康狀態。
 
 ## 系統需求
 
@@ -107,7 +109,6 @@ Backend TraceBuffer 保留最多 **200 筆**，目前頁面另暫存最多 **100
 ## 已知限制
 
 - P404／P210 無法由協議可靠自動區分，請在設定時指定正確型號。
-- R410 DI inputs currently not exposed.
 - R410 Momentary Cover 沒有位置回授，狀態保持 unknown；方向控制、安全與限位由外部乾接點控制器負責。硬體驗收範圍與安全界線請參考 [驗收報告](docs/v1.5.0-r410-cover-acceptance.md)。
 - S402 只提供四路 DI 單擊事件；不提供按下／放開、雙擊或長按事件，也無法推斷單顆 S402 的在線狀態。
 - S402 4x 模式會保留普通 Modbus Slave #1；同一 Gateway／Bus 不得同時設定普通 Slave #1。
@@ -135,11 +136,14 @@ Backend TraceBuffer 保留最多 **200 筆**，目前頁面另暫存最多 **100
 
 ## 更新
 
-HACS 會依 GitHub Release 提供可更新版本。**v1.5.0** 是目前穩定版，可透過一般 HACS 更新檢查取得，無需啟用預發布版本更新。更新前請閱讀 [v1.5.0 Release Notes](docs/v1.5.0-release-notes.md)；Config Entry schema 維持 2.1，不需只為更新版本而刪除並重建整合。
+HACS 會依 GitHub Release 提供可更新版本。**v1.6.0** 是目前穩定版，可透過一般 HACS 更新檢查取得，無需啟用預發布版本更新。更新前請閱讀 [v1.6.0 Release Notes](docs/v1.6.0-release-notes.md)；Config Entry schema 維持 2.1，不需只為更新版本而刪除並重建整合。
 
 ## 開發與驗收文件
 
 - [開發與維護指南](docs/development.md)
+- [v1.6.0 Release Notes](docs/v1.6.0-release-notes.md)
+- [v1.6.0 排程驗收紀錄](docs/v1.6.0-scheduler-acceptance.md)
+- [v1.6.0-beta.1 Release Notes](docs/v1.6.0-beta.1-release-notes.md)
 - [v1.3.3 Release Notes](docs/v1.3.3-release-notes.md)
 - [v1.4.0 Release Notes](docs/v1.4.0-release-notes.md)
 - [S402 實機驗收清單](docs/v1.4.0-s402-acceptance.md)
