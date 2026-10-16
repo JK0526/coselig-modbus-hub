@@ -2,7 +2,7 @@
 
 將 Coselig P404、P210、R410 與 S402，透過 RS485 → TCP Gateway 原生整合進 Home Assistant。整合建立原生 Light／Switch／Event 與 Device，使用 Home Assistant Config Flow 設定，無需 MQTT、Node-RED 或 YAML，並內建管理員限定的 Modbus Monitor。
 
-目前穩定版本：**v1.6.0**。R410 Cover 硬體驗收與 device-oriented Options Flow 實機驗證均已通過。Scheduler 容量、排序、latest-wins、Action FIFO、失敗清理、Poll、Scanner 與 S402 routing 已通過軟體／自動化驗證；100+ circuits 的大型實體部署壓力測試未直接進行。Config Entry schema 維持 **2.1**。
+目前穩定版本：**v1.6.3**。R410 Cover 硬體驗收與 device-oriented Options Flow 實機驗證均已通過。Scheduler 容量、排序、latest-wins、Action FIFO、失敗清理、Poll、Scanner 與 S402 routing 已通過軟體／自動化驗證；100+ circuits 的大型實體部署壓力測試未直接進行。Config Entry schema 維持 **2.1**。
 
 ## 功能特色
 
@@ -136,11 +136,12 @@ Backend TraceBuffer 保留最多 **200 筆**，目前頁面另暫存最多 **100
 
 ## 更新
 
-HACS 會依 GitHub Release 提供可更新版本。**v1.6.0** 是目前穩定版，可透過一般 HACS 更新檢查取得，無需啟用預發布版本更新。更新前請閱讀 [v1.6.0 Release Notes](docs/v1.6.0-release-notes.md)；Config Entry schema 維持 2.1，不需只為更新版本而刪除並重建整合。
+HACS 會依 GitHub Release 提供可更新版本。**v1.6.3** 是目前穩定版，可透過一般 HACS 更新檢查取得，無需啟用預發布版本更新。更新前請閱讀 [v1.6.3 Release Notes](docs/v1.6.3-release-notes.md)；Config Entry schema 維持 2.1，不需只為更新版本而刪除並重建整合。
 
 ## 開發與驗收文件
 
 - [開發與維護指南](docs/development.md)
+- [v1.6.3 Release Notes](docs/v1.6.3-release-notes.md)
 - [v1.6.0 Release Notes](docs/v1.6.0-release-notes.md)
 - [v1.6.0 排程驗收紀錄](docs/v1.6.0-scheduler-acceptance.md)
 - [v1.6.0-beta.1 Release Notes](docs/v1.6.0-beta.1-release-notes.md)

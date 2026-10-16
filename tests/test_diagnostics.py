@@ -1,5 +1,6 @@
 import json
 
+from custom_components.coselig_modbus_hub.const import VERSION
 from custom_components.coselig_modbus_hub.diagnostics import (
     async_get_config_entry_diagnostics,
 )
@@ -19,6 +20,7 @@ async def test_redaction_and_runtime_counters(hass, entry):
     hub.transport.statistics.timeout_count = 3
     hub.coordinator.states[1].consecutive_failures = 3
     result = await async_get_config_entry_diagnostics(hass, entry)
+    assert result["integration"]["version"] == VERSION
     assert entry.data["host"] not in json.dumps(result)
     assert result["gateway"]["host"] == "**REDACTED**"
     assert result["statistics"]["timeout_count"] == 3

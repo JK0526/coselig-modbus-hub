@@ -1,6 +1,6 @@
 # 開發與維護指南
 
-更新：2026-10-16。本文描述目前架構、Runtime 行為、維護界線與可重現驗證方式；排程容量與語意按 v1.6.0 更新。S402 實機驗收已依已回報項目通過並核准 v1.4.0 發布；未回報的硬體情境列於 [S402 驗收紀錄](v1.4.0-s402-acceptance.md)。使用者操作請看 [README](../README.md)；版本差異以 [GitHub Releases](https://github.com/JK0526/coselig-modbus-hub/releases) 與各版 Release Notes 為準。歷史問題盤點保留在 `docs/specs/`，不作新版規範。
+更新：2026-10-16。本文描述目前架構、Runtime 行為、維護界線與可重現驗證方式；排程容量與語意按 v1.6.0 更新。v1.6.3 為目前穩定基準；後續修改應作為明確範圍的 bug fix 或新功能，不改寫歷史架構與 Release 文件。S402 實機驗收已依已回報項目通過並核准 v1.4.0 發布；未回報的硬體情境列於 [S402 驗收紀錄](v1.4.0-s402-acceptance.md)。使用者操作請看 [README](../README.md)；版本差異以 [GitHub Releases](https://github.com/JK0526/coselig-modbus-hub/releases) 與各版 Release Notes 為準。歷史問題盤點保留在 `docs/specs/`，不作新版規範。
 
 ## 架構與模組責任
 
