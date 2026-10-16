@@ -282,7 +282,10 @@ async def test_options_scan_cancel_keeps_paused_runtime_and_control(
         result["flow_id"], {"next_step_id": "device_management"}
     )
     result = await hass.config_entries.options.async_configure(
-        result["flow_id"], {"next_step_id": "add_devices"}
+        result["flow_id"], {"next_step_id": "add_device"}
+    )
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], {"next_step_id": "search_modbus"}
     )
     assert result["data_schema"]({}) == {"scan_start": 51, "scan_end": 80}
     assert not gateway.requests
