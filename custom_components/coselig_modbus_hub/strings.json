@@ -184,13 +184,13 @@
         "data": {"devices": "New devices to add"}
       },
       "model": {
-        "title": "Slave {slave}: confirm model",
-        "description": "Detected family: {family}; suggested model: {recommended}. {model_reason}",
+        "title": "Confirm device model",
+        "description": "Slave {slave}\nDetected family: {family}; suggested model: {recommended}. {model_reason}",
         "data": {"model": "Device model"}
       },
       "groups": {
-        "title": "Output mode: Slave {slave}",
-        "description": "Choose the user-facing output mode for each output pair.",
+        "title": "Output mode",
+        "description": "Slave {slave}\nChoose the user-facing output mode for each output pair.",
         "data": {"group_a": "Outputs 1 + 2", "group_b": "Outputs 3 + 4"}
       },
       "add_summary": {
@@ -224,13 +224,13 @@
         "menu_options": {"back_to_device_management": "Back to previous step"}
       },
       "device_menu": {
-        "title": "Manage {device}",
-        "description": "{details}",
+        "title": "Device management",
+        "description": "{device}\n{details}",
         "menu_options": {"output_mode": "Output mode", "r410_output_configuration": "Output configuration", "remove_managed_device": "Remove device", "back_to_device_list": "Back to previous step"}
       },
       "s402_device_management": {
-        "title": "{device}",
-        "description": "{details}",
+        "title": "S402 device",
+        "description": "{device}\n{details}",
         "menu_options": {"remove_managed_s402": "Remove device", "back_to_device_list": "Back to previous step"}
       },
       "communication_scan_range": {
