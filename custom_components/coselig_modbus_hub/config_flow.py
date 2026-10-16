@@ -136,6 +136,8 @@ class ProfileFlow:
         self._cover_original: R410CoverConfig | None = None
         self._cover_draft: dict[str, Any] = {}
         self._cover_remove_id: str | None = None
+        self._managed_kind: str | None = None
+        self._managed_id: int | None = None
 
     def _scan_progress(self, current: int, total: int, found: int) -> None:
         self._progress = {
@@ -197,7 +199,7 @@ class ProfileFlow:
     ) -> ConfigFlowResult:
         return self.async_show_menu(
             step_id="scan_no_new",
-            menu_options=["rescan", "scan_range", "back_to_device_management"],
+            menu_options=["rescan", "scan_range", "back_to_add_device"],
             description_placeholders={
                 "existing": self._existing_description(),
                 "missing": self._missing_description(),
@@ -398,7 +400,7 @@ class ProfileFlow:
     ) -> ConfigFlowResult:
         self._s402_pending_id = None
         if isinstance(self, CoseligOptionsFlow):
-            return await self.async_step_s402_management()
+            return await self.async_step_add_device()
         return self.async_abort(reason="user_cancelled")
 
     async def _start_profiles(self) -> ConfigFlowResult:
@@ -407,17 +409,11 @@ class ProfileFlow:
         return await self.async_step_model()
 
     def _model_candidates(self, slave: int) -> tuple[Model, ...]:
-        if self._flow_action == "edit":
-            return tuple(Model)
         detection = self._detections.get(slave, ScanResult(slave))
         return detection.candidates
 
     def _make_profile_device(self, slave: int, model: Model) -> Device:
-        old = self._edit_old if self._flow_action == "edit" else None
-        groups: dict[str, GroupMode] = {}
-        if old is not None and old.model == model:
-            groups = {field: getattr(old, field) for field in old.profile.group_fields}
-        return Device(slave, model, **groups)
+        return Device(slave, model)
 
     async def async_step_model(
         self, user_input: dict[str, Any] | None = None
@@ -583,7 +579,7 @@ class ProfileFlow:
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
         if isinstance(self, CoseligOptionsFlow):
-            return await self.async_step_device_management()
+            return await self.async_step_add_device()
         return self.async_abort(reason="user_cancelled")
 
     async def async_step_back_to_options(
@@ -689,6 +685,10 @@ class CoseligOptionsFlow(ProfileFlow, config_entries.OptionsFlowWithReload):
     async def async_step_init(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
+        self._managed_kind = None
+        self._managed_id = None
+        self._cover_original = None
+        self._cover_remove_id = None
         self._gateway = dict(self.config_entry.data)
         self._options = {
             "poll_interval": DEFAULT_POLL_INTERVAL,
@@ -720,14 +720,195 @@ class CoseligOptionsFlow(ProfileFlow, config_entries.OptionsFlowWithReload):
         return self.async_show_menu(
             step_id="device_management",
             menu_options=[
-                "add_devices",
-                "edit_devices",
-                "remove_devices",
-                "s402_management",
-                "r410_cover_management",
+                "add_device",
+                "manage_devices",
                 "back_to_options",
             ],
         )
+
+    def _is_zh(self) -> bool:
+        return self.hass.config.language.lower().startswith("zh")
+
+    def _device_label(self, model: Model, slave: int) -> str:
+        if self._is_zh():
+            description = {
+                Model.P404: "4 路 PWM 調光器",
+                Model.P210: "2 路 PWM 調光器",
+                Model.R410: "4 路 Relay",
+            }[model]
+        else:
+            description = {
+                Model.P404: "4-channel PWM dimmer",
+                Model.P210: "2-channel PWM dimmer",
+                Model.R410: "4-channel Relay",
+            }[model]
+        return f"{model.value.upper()} #{slave} · {description}"
+
+    def _installed_device_options(self) -> list[dict[str, str]]:
+        options = [
+            {
+                "value": f"modbus:{slave}",
+                "label": self._device_label(device.model, slave),
+            }
+            for slave, device in sorted(self._existing.items())
+        ]
+        s402_label = "4 路場景輸入" if self._is_zh() else "4-input scene module"
+        options.extend(
+            {
+                "value": f"s402:{device_id}",
+                "label": f"S402 #{device_id} · {s402_label}",
+            }
+            for device_id in sorted(self._s402_ids)
+        )
+        return options
+
+    async def async_step_add_device(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        return self.async_show_menu(
+            step_id="add_device",
+            menu_options=[
+                "search_modbus",
+                "add_s402",
+                "back_to_device_management",
+            ],
+        )
+
+    async def async_step_search_modbus(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        self._flow_action = "add"
+        self._detections = {}
+        self._found = []
+        self._scan_task = None
+        return await self.async_step_scan_range()
+
+    async def async_step_manage_devices(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        options = self._installed_device_options()
+        if not options:
+            return self.async_show_menu(
+                step_id="manage_devices",
+                menu_options=["back_to_device_management"],
+                description_placeholders={
+                    "devices": "尚未設定裝置。"
+                    if self._is_zh()
+                    else "No devices are configured."
+                },
+            )
+        if user_input is not None:
+            selected = user_input.get("device", "")
+            if not isinstance(selected, str):
+                return self.async_show_form(
+                    step_id="manage_devices",
+                    errors={"device": "device_not_found"},
+                    data_schema=vol.Schema({vol.Required("device"): select(options)}),
+                )
+            kind, separator, raw_id = selected.partition(":")
+            if (
+                not separator
+                or kind not in {"modbus", "s402"}
+                or not raw_id.isdecimal()
+            ):
+                return self.async_show_form(
+                    step_id="manage_devices",
+                    errors={"device": "device_not_found"},
+                    data_schema=vol.Schema({vol.Required("device"): select(options)}),
+                )
+            device_id = int(raw_id)
+            if (kind == "modbus" and device_id not in self._existing) or (
+                kind == "s402" and device_id not in self._s402_ids
+            ):
+                return self.async_show_form(
+                    step_id="manage_devices",
+                    errors={"device": "device_not_found"},
+                    data_schema=vol.Schema({vol.Required("device"): select(options)}),
+                )
+            self._managed_kind = kind
+            self._managed_id = device_id
+            if kind == "s402":
+                return await self.async_step_s402_device_management()
+            return await self.async_step_device_menu()
+        return self.async_show_form(
+            step_id="manage_devices",
+            data_schema=vol.Schema({vol.Required("device"): select(options)}),
+        )
+
+    async def async_step_device_menu(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        if self._managed_kind != "modbus" or self._managed_id not in self._existing:
+            return await self.async_step_manage_devices()
+        device = self._existing[self._managed_id]
+        if device.model in (Model.P404, Model.P210):
+            action = "output_mode"
+            description = (
+                ("4 路 PWM 調光器" if device.model == Model.P404 else "2 路 PWM 調光器")
+                if self._is_zh()
+                else (
+                    "4-channel PWM dimmer"
+                    if device.model == Model.P404
+                    else "2-channel PWM dimmer"
+                )
+            )
+        else:
+            action = "r410_output_configuration"
+            description = "4 路 Relay" if self._is_zh() else "4-channel Relay"
+        return self.async_show_menu(
+            step_id="device_menu",
+            menu_options=[action, "remove_managed_device", "back_to_device_list"],
+            description_placeholders={
+                "device": f"{device.model.value.upper()} #{device.slave}",
+                "details": description,
+            },
+        )
+
+    async def async_step_output_mode(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        if self._managed_kind != "modbus" or self._managed_id not in self._existing:
+            return await self.async_step_manage_devices()
+        device = self._existing[self._managed_id]
+        if device.model not in (Model.P404, Model.P210):
+            return await self.async_step_device_menu()
+        self._flow_action = "edit"
+        self._edit_old = device
+        self._selected = [device.slave]
+        self._working_devices = [device]
+        self._group_index = 0
+        return await self.async_step_groups()
+
+    async def async_step_remove_managed_device(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        if self._managed_kind != "modbus" or self._managed_id not in self._existing:
+            return await self.async_step_manage_devices()
+        self._remove_selected = [self._managed_id]
+        return await self.async_step_remove_summary()
+
+    async def async_step_s402_device_management(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        if self._managed_kind != "s402" or self._managed_id not in self._s402_ids:
+            return await self.async_step_manage_devices()
+        device_id = self._managed_id
+        return self.async_show_menu(
+            step_id="s402_device_management",
+            menu_options=["remove_managed_s402", "back_to_device_list"],
+            description_placeholders={
+                "device": f"S402 #{device_id}",
+                "details": "DI1\nDI2\nDI3\nDI4",
+            },
+        )
+
+    async def async_step_remove_managed_s402(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        if self._managed_kind != "s402" or self._managed_id not in self._s402_ids:
+            return await self.async_step_manage_devices()
+        self._s402_remove_selected = [self._managed_id]
+        return await self.async_step_s402_remove_summary()
 
     def _cover_relay_pool(self, slave: int) -> tuple[int, ...]:
         reserved = set()
@@ -739,54 +920,110 @@ class CoseligOptionsFlow(ProfileFlow, config_entries.OptionsFlowWithReload):
         return tuple(relay for relay in range(1, 5) if relay not in reserved)
 
     def _cover_candidate_slaves(self) -> tuple[int, ...]:
-        return tuple(
-            slave
-            for slave, device in sorted(self._existing.items())
-            if device.model == Model.R410 and len(self._cover_relay_pool(slave)) >= 2
-        )
+        slave = self._managed_id
+        if (
+            self._managed_kind == "modbus"
+            and slave in self._existing
+            and self._existing[slave].model == Model.R410
+            and len(self._cover_relay_pool(slave)) >= 2
+        ):
+            return (slave,)
+        return ()
 
     def _cover_allocations_description(self) -> str:
-        lines = []
-        for cover in self._r410_covers:
+        slave = self._managed_id
+        zh = self._is_zh()
+        lines = [
+            f"R410 #{slave} · 輸出配置" if zh else f"R410 #{slave} · Output allocation"
+        ]
+        covers = [cover for cover in self._r410_covers if cover.slave == slave]
+        for cover in covers:
             stop = (
-                " + ".join(f"R{relay}" for relay in cover.relays)
+                " + ".join(
+                    f"R{relay}" for relay in (cover.open_relay, cover.close_relay)
+                )
                 if cover.mode == R410CoverMode.TWO_RELAY
                 else f"R{cover.stop_relay}"
             )
-            lines.append(
-                f"R410 #{cover.slave} · {cover.name} · "
-                f"{cover.mode.value} · 開 R{cover.open_relay} · "
-                f"停 {stop} · 關 R{cover.close_relay} · "
-                f"脈衝 {cover.pulse_tenths / 10:.1f} 秒"
+            mode = (
+                ("兩路控制" if cover.mode == R410CoverMode.TWO_RELAY else "三路控制")
+                if zh
+                else cover.mode.value.replace("_", " ").title()
             )
-        for slave, device in sorted(self._existing.items()):
-            if device.model != Model.R410:
-                continue
-            free = self._cover_relay_pool(slave)
-            lines.append(
-                f"R410 #{slave} 一般 Switch："
-                + ("、".join(f"Relay {relay}" for relay in free) if free else "無")
-            )
-        return "\n".join(lines) or "尚未設定 R410。至少需要 2 個未使用 Relay。"
+            if zh:
+                lines.extend(
+                    (
+                        cover.name,
+                        mode,
+                        f"開：R{cover.open_relay}",
+                        f"關：R{cover.close_relay}",
+                        f"停：{stop}",
+                        f"脈衝：{cover.pulse_tenths / 10:.1f} 秒",
+                    )
+                )
+            else:
+                lines.extend(
+                    (
+                        cover.name,
+                        mode,
+                        f"Open: R{cover.open_relay}",
+                        f"Close: R{cover.close_relay}",
+                        f"Stop: {stop}",
+                        f"Pulse: {cover.pulse_tenths / 10:.1f} s",
+                    )
+                )
+        allocated = {relay for cover in covers for relay in cover.relays}
+        for relay in range(1, 5):
+            if relay not in allocated:
+                lines.append(
+                    f"R{relay}：一般 Relay" if zh else f"R{relay}: General Relay"
+                )
+        return "\n".join(lines)
 
-    async def async_step_r410_cover_management(
+    def _covers_for_selected_r410(self) -> tuple[R410CoverConfig, ...]:
+        return tuple(
+            cover for cover in self._r410_covers if cover.slave == self._managed_id
+        )
+
+    async def async_step_r410_output_configuration(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
+        if (
+            self._managed_kind != "modbus"
+            or self._managed_id not in self._existing
+            or self._existing[self._managed_id].model != Model.R410
+        ):
+            return await self.async_step_device_menu()
         options = []
         if self._cover_candidate_slaves():
             options.append("add_r410_cover")
-        if self._r410_covers:
-            options.extend(("edit_r410_cover", "remove_r410_cover"))
-        if not options:
-            options.append("back_to_device_management")
-        else:
-            options.append("back_to_device_management")
+        if self._covers_for_selected_r410():
+            options.append("manage_r410_covers")
+        options.append("back_to_device_menu")
         return self.async_show_menu(
-            step_id="r410_cover_management",
+            step_id="r410_output_configuration",
             menu_options=options,
             description_placeholders={
-                "allocations": self._cover_allocations_description()
+                "allocations": self._cover_allocations_description(),
+                "reason": "",
             },
+        )
+
+    async def async_step_manage_r410_covers(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        if not self._covers_for_selected_r410():
+            return self.async_show_menu(
+                step_id="manage_r410_covers",
+                menu_options=["back_to_r410_output_configuration"],
+            )
+        return self.async_show_menu(
+            step_id="manage_r410_covers",
+            menu_options=[
+                "edit_r410_cover",
+                "remove_r410_cover",
+                "back_to_r410_output_configuration",
+            ],
         )
 
     async def async_step_add_r410_cover(
@@ -796,46 +1033,40 @@ class CoseligOptionsFlow(ProfileFlow, config_entries.OptionsFlowWithReload):
         if not slaves:
             return self.async_show_menu(
                 step_id="add_r410_cover",
-                menu_options=["back_to_r410_cover_management"],
-                description_placeholders={"reason": "至少需要 2 個未使用 Relay。"},
+                menu_options=["back_to_r410_output_configuration"],
+                description_placeholders={
+                    "reason": (
+                        "至少需要 2 個未使用 Relay。"
+                        if self._is_zh()
+                        else "At least two unassigned relays are required."
+                    )
+                },
             )
-        options = [{"value": str(slave), "label": f"R410 #{slave}"} for slave in slaves]
-        if user_input is not None:
-            try:
-                slave = int(user_input["slave"])
-            except KeyError, TypeError, ValueError:
-                slave = None
-            if slave not in slaves:
-                return self.async_show_form(
-                    step_id="add_r410_cover",
-                    errors={"slave": "cover_r410_unavailable"},
-                    data_schema=vol.Schema({vol.Required("slave"): select(options)}),
-                )
-            self._cover_action = "add"
-            self._cover_original = None
-            self._cover_draft = {"id": uuid4().hex, "slave": slave}
-            return await self.async_step_cover_name()
-        return self.async_show_form(
-            step_id="add_r410_cover",
-            data_schema=vol.Schema({vol.Required("slave"): select(options)}),
-        )
+        self._cover_action = "add"
+        self._cover_original = None
+        self._cover_draft = {"id": uuid4().hex, "slave": slaves[0]}
+        return await self.async_step_cover_name()
 
     async def async_step_edit_r410_cover(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
-        if not self._r410_covers:
+        selected_covers = self._covers_for_selected_r410()
+        if not selected_covers:
             return self.async_show_menu(
                 step_id="edit_r410_cover",
-                menu_options=["back_to_r410_cover_management"],
-                description_placeholders={"covers": "尚未設定 Cover。"},
+                menu_options=["back_to_manage_r410_covers"],
+                description_placeholders={
+                    "covers": "尚未設定 Cover。"
+                    if self._is_zh()
+                    else "No Covers are configured for this R410."
+                },
             )
         options = [
-            {"value": cover.id, "label": f"R410 #{cover.slave} · {cover.name}"}
-            for cover in self._r410_covers
+            {"value": cover.id, "label": cover.name} for cover in selected_covers
         ]
         if user_input is not None:
             selected = next(
-                (cover for cover in self._r410_covers if cover.id == user_input["id"]),
+                (cover for cover in selected_covers if cover.id == user_input["id"]),
                 None,
             )
             if selected is None:
@@ -1102,12 +1333,12 @@ class CoseligOptionsFlow(ProfileFlow, config_entries.OptionsFlowWithReload):
         try:
             cover = parse_r410_cover(self._cover_draft)
         except R410CoverConfigError:
-            return await self.async_step_r410_cover_management()
+            return await self.async_step_r410_output_configuration()
         updated = self._copy_options()
         records = copy.deepcopy(updated.get("r410_covers", []))
         if self._cover_action == "add":
             if any(parse_r410_cover(raw).id == cover.id for raw in records):
-                return await self.async_step_r410_cover_management()
+                return await self.async_step_r410_output_configuration()
             records.append(cover.as_dict())
         else:
             found = False
@@ -1124,7 +1355,7 @@ class CoseligOptionsFlow(ProfileFlow, config_entries.OptionsFlowWithReload):
                 else:
                     replaced.append(raw)
             if not found:
-                return await self.async_step_r410_cover_management()
+                return await self.async_step_r410_output_configuration()
             records = replaced
         updated["r410_covers"] = records
         try:
@@ -1141,26 +1372,33 @@ class CoseligOptionsFlow(ProfileFlow, config_entries.OptionsFlowWithReload):
     async def async_step_cancel_cover(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
+        return_to_manage = self._cover_action == "edit"
         self._cover_draft = {}
         self._cover_original = None
-        return await self.async_step_r410_cover_management()
+        if return_to_manage:
+            return await self.async_step_manage_r410_covers()
+        return await self.async_step_r410_output_configuration()
 
     async def async_step_remove_r410_cover(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
-        if not self._r410_covers:
+        selected_covers = self._covers_for_selected_r410()
+        if not selected_covers:
             return self.async_show_menu(
                 step_id="remove_r410_cover",
-                menu_options=["back_to_r410_cover_management"],
-                description_placeholders={"covers": "尚未設定 Cover。"},
+                menu_options=["back_to_manage_r410_covers"],
+                description_placeholders={
+                    "covers": "尚未設定 Cover。"
+                    if self._is_zh()
+                    else "No Covers are configured for this R410."
+                },
             )
         options = [
-            {"value": cover.id, "label": f"R410 #{cover.slave} · {cover.name}"}
-            for cover in self._r410_covers
+            {"value": cover.id, "label": cover.name} for cover in selected_covers
         ]
         if user_input is not None:
             selected = next(
-                (cover for cover in self._r410_covers if cover.id == user_input["id"]),
+                (cover for cover in selected_covers if cover.id == user_input["id"]),
                 None,
             )
             if selected is None:
@@ -1182,7 +1420,7 @@ class CoseligOptionsFlow(ProfileFlow, config_entries.OptionsFlowWithReload):
     ) -> ConfigFlowResult:
         cover = self._cover_original
         if cover is None:
-            return await self.async_step_r410_cover_management()
+            return await self.async_step_r410_output_configuration()
         return self.async_show_menu(
             step_id="remove_cover_summary",
             menu_options=["confirm_remove_cover", "cancel_remove_cover"],
@@ -1197,7 +1435,7 @@ class CoseligOptionsFlow(ProfileFlow, config_entries.OptionsFlowWithReload):
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
         if self._cover_remove_id is None:
-            return await self.async_step_r410_cover_management()
+            return await self.async_step_r410_output_configuration()
         updated = self._copy_options()
         records = []
         for raw in updated.get("r410_covers", []):
@@ -1211,63 +1449,17 @@ class CoseligOptionsFlow(ProfileFlow, config_entries.OptionsFlowWithReload):
     ) -> ConfigFlowResult:
         self._cover_remove_id = None
         self._cover_original = None
-        return await self.async_step_r410_cover_management()
+        return await self.async_step_manage_r410_covers()
 
-    async def async_step_back_to_r410_cover_management(
+    async def async_step_back_to_r410_output_configuration(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
-        return await self.async_step_r410_cover_management()
+        return await self.async_step_r410_output_configuration()
 
-    async def async_step_s402_management(
+    async def async_step_back_to_manage_r410_covers(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
-        return self.async_show_menu(
-            step_id="s402_management",
-            menu_options=["add_s402", "remove_s402", "back_to_device_management"],
-            description_placeholders={
-                "devices": "\n".join(
-                    f"S402 #{device_id}" for device_id in self._s402_ids
-                )
-                or "尚未設定 S402。"
-            },
-        )
-
-    async def async_step_remove_s402(
-        self, user_input: dict[str, Any] | None = None
-    ) -> ConfigFlowResult:
-        if not self._s402_ids:
-            return self.async_show_menu(
-                step_id="remove_s402",
-                menu_options=["back_to_s402_management"],
-                description_placeholders={"devices": "尚未設定 S402。"},
-            )
-        options = [
-            {"value": str(device_id), "label": f"S402 #{device_id}"}
-            for device_id in self._s402_ids
-        ]
-        if user_input is not None:
-            self._s402_remove_selected = sorted(
-                int(value) for value in user_input["devices"]
-            )
-            if not self._s402_remove_selected:
-                return self.async_show_form(
-                    step_id="remove_s402",
-                    errors={"devices": "no_s402_to_remove"},
-                    data_schema=vol.Schema(
-                        {
-                            vol.Required("devices", default=[]): select(
-                                options, multiple=True
-                            )
-                        }
-                    ),
-                )
-            return await self.async_step_s402_remove_summary()
-        return self.async_show_form(
-            step_id="remove_s402",
-            data_schema=vol.Schema(
-                {vol.Required("devices", default=[]): select(options, multiple=True)}
-            ),
-        )
+        return await self.async_step_manage_r410_covers()
 
     async def async_step_s402_remove_summary(
         self, user_input: dict[str, Any] | None = None
@@ -1296,111 +1488,73 @@ class CoseligOptionsFlow(ProfileFlow, config_entries.OptionsFlowWithReload):
     async def async_step_cancel_s402_remove(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
-        return await self.async_step_s402_management()
-
-    async def async_step_back_to_s402_management(
-        self, user_input: dict[str, Any] | None = None
-    ) -> ConfigFlowResult:
-        return await self.async_step_s402_management()
+        return await self.async_step_s402_device_management()
 
     async def async_step_back_to_device_management(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
         return await self.async_step_device_management()
 
+    async def async_step_back_to_device_list(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        return await self.async_step_manage_devices()
+
+    async def async_step_back_to_device_menu(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        return await self.async_step_device_menu()
+
+    async def async_step_back_to_add_device(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        return await self.async_step_add_device()
+
     async def async_step_communication(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
         return self.async_show_menu(
             step_id="communication",
-            menu_options=["polling", "back_to_options"],
-        )
-
-    async def async_step_add_devices(
-        self, user_input: dict[str, Any] | None = None
-    ) -> ConfigFlowResult:
-        self._flow_action = "add"
-        self._detections = {}
-        self._found = []
-        self._scan_task = None
-        return await self.async_step_scan_range()
-
-    async def async_step_edit_devices(
-        self, user_input: dict[str, Any] | None = None
-    ) -> ConfigFlowResult:
-        if not self._existing:
-            return self.async_show_menu(
-                step_id="edit_devices",
-                menu_options=["back_to_device_management"],
-                description_placeholders={"devices": "尚未設定設備。"},
-            )
-        if user_input is not None:
-            slave = int(user_input["slave"])
-            self._edit_old = self._existing[slave]
-            self._flow_action = "edit"
-            self._selected = [slave]
-            return await self._start_profiles()
-        options = [
-            {
-                "value": str(slave),
-                "label": f"Slave {slave} · {device.model.value.upper()}",
-            }
-            for slave, device in sorted(self._existing.items())
-        ]
-        return self.async_show_form(
-            step_id="edit_devices",
-            data_schema=vol.Schema({vol.Required("slave"): select(options)}),
-        )
-
-    async def async_step_remove_devices(
-        self, user_input: dict[str, Any] | None = None
-    ) -> ConfigFlowResult:
-        if not self._existing:
-            return self.async_show_menu(
-                step_id="remove_devices",
-                menu_options=["back_to_device_management"],
-                description_placeholders={"devices": "尚未設定設備。"},
-            )
-        options = [
-            {
-                "value": str(slave),
-                "label": f"Slave {slave} · {device.model.value.upper()}",
-            }
-            for slave, device in sorted(self._existing.items())
-        ]
-        if user_input is not None:
-            self._remove_selected = sorted(
-                int(value) for value in user_input["devices"]
-            )
-            if not self._remove_selected:
-                return self.async_show_form(
-                    step_id="remove_devices",
-                    data_schema=vol.Schema(
-                        {
-                            vol.Required("devices", default=[]): select(
-                                options, multiple=True
-                            )
-                        }
-                    ),
-                    errors={"devices": "no_devices_to_remove"},
+            menu_options=[
+                "polling",
+                "communication_scan_range",
+                "back_to_options",
+            ],
+            description_placeholders={
+                "gateway": (
+                    "Host／Port 由此設定流程之外的原生重新設定流程管理。"
+                    if self._is_zh()
+                    else "Host and port remain in the integration's native Reconfigure flow."
                 )
-            return self.async_show_menu(
-                step_id="remove_summary",
-                menu_options=["confirm_remove", "cancel_remove"],
-                description_placeholders={
-                    "devices": "\n".join(
-                        f"Slave {slave} · {self._existing[slave].model.value.upper()}"
-                        for slave in self._remove_selected
-                    ),
-                    "covers": self._cover_removals_for_devices(
-                        set(self._remove_selected)
-                    ),
-                },
-            )
+            },
+        )
+
+    async def async_step_communication_scan_range(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        errors = {}
+        if user_input is not None:
+            start, end = user_input["scan_start"], user_input["scan_end"]
+            if start > end:
+                errors["base"] = "invalid_range"
+            else:
+                updated = self._copy_options()
+                updated["scan_start"] = start
+                updated["scan_end"] = end
+                self.automatic_reload = False
+                return self.async_create_entry(data=updated)
         return self.async_show_form(
-            step_id="remove_devices",
+            step_id="communication_scan_range",
+            errors=errors,
             data_schema=vol.Schema(
-                {vol.Required("devices", default=[]): select(options, multiple=True)}
+                {
+                    vol.Required(
+                        "scan_start", default=self._options["scan_start"]
+                    ): vol.All(int, vol.Range(min=1, max=247)),
+                    vol.Required(
+                        "scan_end", default=self._options["scan_end"]
+                    ): vol.All(int, vol.Range(min=1, max=247)),
+                }
             ),
         )
 
@@ -1429,7 +1583,7 @@ class CoseligOptionsFlow(ProfileFlow, config_entries.OptionsFlowWithReload):
             menu_options=["confirm_remove", "cancel_remove"],
             description_placeholders={
                 "devices": "\n".join(
-                    f"Slave {slave} · {self._existing[slave].model.value.upper()}"
+                    f"{self._existing[slave].model.value.upper()} #{slave}"
                     for slave in self._remove_selected
                 ),
                 "covers": self._cover_removals_for_devices(set(self._remove_selected)),
@@ -1439,7 +1593,7 @@ class CoseligOptionsFlow(ProfileFlow, config_entries.OptionsFlowWithReload):
     async def async_step_cancel_remove(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
-        return await self.async_step_device_management()
+        return await self.async_step_device_menu()
 
     async def async_step_polling(
         self, user_input: dict[str, Any] | None = None
@@ -1505,22 +1659,17 @@ class CoseligOptionsFlow(ProfileFlow, config_entries.OptionsFlowWithReload):
             else copy.deepcopy(device)
             for device in self._existing_raw_devices
         ]
-        if replacement.model != Model.R410 and "r410_covers" in updated:
-            updated["r410_covers"] = [
-                copy.deepcopy(cover)
-                for cover in updated["r410_covers"]
-                if int(cover["slave"]) != replacement.slave
-            ]
         return self.async_create_entry(data=updated)
 
     def _cover_removals_for_devices(self, slaves: set[int]) -> str:
+        separator = "、" if self._is_zh() else ", "
         names = [
             f"R410 #{cover.slave} · {cover.name} · "
-            + "、".join(f"R{relay}" for relay in cover.relays)
+            + separator.join(f"R{relay}" for relay in cover.relays)
             for cover in self._r410_covers
             if cover.slave in slaves
         ]
-        return "\n".join(names) or "無"
+        return "\n".join(names) or ("無" if self._is_zh() else "None")
 
     def _serialize_existing(self, device: Device) -> dict[str, Any]:
         """Update the selected device while retaining its unknown future fields."""
@@ -1536,13 +1685,33 @@ class CoseligOptionsFlow(ProfileFlow, config_entries.OptionsFlowWithReload):
         }
 
     def _return_to_device_management(self) -> ConfigFlowResult:
+        if self._flow_action != "edit":
+            return self.async_show_menu(
+                step_id="add_device",
+                menu_options=[
+                    "search_modbus",
+                    "add_s402",
+                    "back_to_device_management",
+                ],
+            )
+        device = self._existing.get(self._managed_id)
+        if device is None:
+            return self.async_show_form(
+                step_id="manage_devices",
+                data_schema=vol.Schema(
+                    {vol.Required("device"): select(self._installed_device_options())}
+                ),
+            )
+        label = self._device_label(device.model, device.slave)
         return self.async_show_menu(
-            step_id="device_management",
+            step_id="device_menu",
             menu_options=[
-                "add_devices",
-                "edit_devices",
-                "remove_devices",
-                "s402_management",
-                "back_to_options",
+                "output_mode",
+                "remove_managed_device",
+                "back_to_device_list",
             ],
+            description_placeholders={
+                "device": f"{device.model.value.upper()} #{device.slave}",
+                "details": label.partition(" · ")[2],
+            },
         )

@@ -64,6 +64,23 @@ async def _options_ready(options):
     return result
 
 
+async def _select_modbus(options, slave):
+    result = await options.async_step_manage_devices({"device": f"modbus:{slave}"})
+    assert result["step_id"] == "device_menu"
+    return result
+
+
+async def _select_s402(options, device_id):
+    result = await options.async_step_manage_devices({"device": f"s402:{device_id}"})
+    assert result["step_id"] == "s402_device_management"
+    return result
+
+
+async def _open_r410_outputs(options, slave=63):
+    await _select_modbus(options, slave)
+    return await options.async_step_r410_output_configuration()
+
+
 async def _add_p404(options, slave):
     options._found = [slave]
     options._detections = {
@@ -270,10 +287,10 @@ async def test_s402_options_add_remove_confirmation_and_unknown_option_preservat
     }
     hass.config_entries.async_update_entry(entry, options=original)
     await _options_ready(options)
-    management = await options.async_step_s402_management()
-    assert management["menu_options"] == [
+    await options.async_step_device_management()
+    assert (await options.async_step_add_device())["menu_options"] == [
+        "search_modbus",
         "add_s402",
-        "remove_s402",
         "back_to_device_management",
     ]
     summary = await options.async_step_add_s402({"s402_id": 12})
@@ -292,27 +309,34 @@ async def test_s402_options_add_remove_confirmation_and_unknown_option_preservat
 
     hass.config_entries.async_update_entry(entry, options=added["data"])
     await options.async_step_init()
-    result = await options.async_step_remove_s402({"devices": []})
-    assert result["errors"] == {"devices": "no_s402_to_remove"}
-    result = await options.async_step_remove_s402({"devices": ["7"]})
+    device = await _select_s402(options, 7)
+    assert device["menu_options"] == [
+        "remove_managed_s402",
+        "back_to_device_list",
+    ]
+    assert device["description_placeholders"]["details"] == "DI1\nDI2\nDI3\nDI4"
+    result = await options.async_step_remove_managed_s402()
     assert result["step_id"] == "s402_remove_summary"
     assert entry.options == added["data"]
     await options.async_step_cancel_s402_remove()
     assert entry.options == added["data"]
-    await options.async_step_remove_s402({"devices": ["7"]})
+    await options.async_step_remove_managed_s402()
     removed = await options.async_step_confirm_s402_remove()
     assert removed["data"]["s402_devices"] == [{"id": 12}]
     assert removed["data"]["devices"] == original["devices"]
     assert removed["data"]["future_option"] == {"keep": True}
 
 
-async def test_remove_s402_empty_state_has_return_menu(options):
+async def test_remove_s402_empty_state_has_return_menu(options, entry, hass):
+    hass.config_entries.async_update_entry(
+        entry, options={**entry.options, "devices": [], "s402_devices": []}
+    )
     await _options_ready(options)
-    result = await options.async_step_remove_s402()
-    assert result["menu_options"] == ["back_to_s402_management"]
-    assert (await options.async_step_back_to_s402_management())[
-        "step_id"
-    ] == "s402_management"
+    result = await options.async_step_manage_devices()
+    assert result["menu_options"] == ["back_to_device_management"]
+    assert (await options.async_step_back_to_device_management())["step_id"] == (
+        "device_management"
+    )
 
 
 async def test_s402_flows_handle_missing_pending_and_configured_list_safely(
@@ -323,18 +347,22 @@ async def test_s402_flows_handle_missing_pending_and_configured_list_safely(
     ] == "setup_devices"
     assert (await flow.async_step_s402_summary())["step_id"] == "add_s402"
     assert (await flow.async_step_confirm_s402())["step_id"] == "add_s402"
-    assert (await options.async_step_cancel_s402())["step_id"] == "s402_management"
+    assert (await options.async_step_cancel_s402())["step_id"] == "add_device"
     assert (await options.async_step_back_to_device_management())[
         "step_id"
     ] == "device_management"
 
     await _options_ready(options)
+    options._existing = {}
     options._s402_ids = [7]
-    result = await options.async_step_remove_s402()
-    assert result["step_id"] == "remove_s402"
-    assert _choices(result, "devices") == [{"value": "7", "label": "S402 #7"}]
-    result = await options.async_step_remove_s402({"devices": []})
-    assert result["errors"] == {"devices": "no_s402_to_remove"}
+    result = await options.async_step_manage_devices()
+    assert _choices(result, "device") == [
+        {"value": "s402:7", "label": "S402 #7 · 4-input scene module"}
+    ]
+    result = await options.async_step_manage_devices({"device": "s402:7"})
+    assert result["step_id"] == "s402_device_management"
+    result = await options.async_step_remove_managed_s402()
+    assert result["step_id"] == "s402_remove_summary"
     assert "s402_devices" not in entry.options
 
 
@@ -449,7 +477,7 @@ async def test_scan_error_no_new_and_range_validation(flow, options):
     assert result["menu_options"] == [
         "rescan",
         "scan_range",
-        "back_to_device_management",
+        "back_to_add_device",
     ]
     assert "Slave 3 · P210 · 未在線" in result["description_placeholders"]["missing"]
     assert "Slave 1 · P404" in result["description_placeholders"]["existing"]
@@ -485,7 +513,7 @@ async def test_cancel_scan_task_and_cleanly_returns_to_menu(flow, options):
         await asyncio.gather(task, return_exceptions=True)
         assert task.cancelled()
     assert (await flow.async_step_cancel())["reason"] == "user_cancelled"
-    assert (await options.async_step_cancel())["step_id"] == "device_management"
+    assert (await options.async_step_cancel())["step_id"] == "add_device"
     options.async_remove()
 
 
@@ -500,17 +528,26 @@ async def test_options_menus_and_add_only_new_with_confirmation(options, entry, 
     }
     hass.config_entries.async_update_entry(entry, options=original)
     await _options_ready(options)
+    assert (await options.async_step_init())["step_id"] == "init"
     assert (await options.async_step_device_management())["menu_options"] == [
-        "add_devices",
-        "edit_devices",
-        "remove_devices",
-        "s402_management",
-        "r410_cover_management",
+        "add_device",
+        "manage_devices",
         "back_to_options",
     ]
     assert (await options.async_step_communication())["menu_options"] == [
         "polling",
+        "communication_scan_range",
         "back_to_options",
+    ]
+    assert (await options.async_step_add_device())["menu_options"] == [
+        "search_modbus",
+        "add_s402",
+        "back_to_device_management",
+    ]
+    managed = await options.async_step_manage_devices()
+    assert [item["value"] for item in _choices(managed, "device")] == [
+        "modbus:1",
+        "modbus:3",
     ]
     options._found = [1, 3, 63]
     options._detections = {
@@ -542,6 +579,217 @@ async def test_options_menus_and_add_only_new_with_confirmation(options, entry, 
     assert result["data"]["scan_end"] == original["scan_end"]
 
 
+async def test_unified_device_selector_routes_each_device_to_its_capabilities(
+    options, entry, hass
+):
+    devices = [
+        {"slave": 51, "model": "p404", "group_a": "single", "group_b": "cct"},
+        {"slave": 22, "model": "p210", "group_a": "cct"},
+        {"slave": 63, "model": "r410"},
+    ]
+    s402 = [{"id": 7}]
+    cover = _cover_options(slave=63)
+    original = {
+        **entry.options,
+        "devices": devices,
+        "s402_devices": s402,
+        "r410_covers": [cover],
+        "future_option": {"keep": True},
+    }
+    hass.config_entries.async_update_entry(entry, options=original)
+    await _options_ready(options)
+    result = await options.async_step_manage_devices()
+    assert _choices(result, "device") == [
+        {"value": "modbus:22", "label": "P210 #22 · 2-channel PWM dimmer"},
+        {"value": "modbus:51", "label": "P404 #51 · 4-channel PWM dimmer"},
+        {"value": "modbus:63", "label": "R410 #63 · 4-channel Relay"},
+        {"value": "s402:7", "label": "S402 #7 · 4-input scene module"},
+    ]
+
+    p404 = await _select_modbus(options, 51)
+    assert p404["menu_options"] == [
+        "output_mode",
+        "remove_managed_device",
+        "back_to_device_list",
+    ]
+    result = await options.async_step_output_mode()
+    assert result["data_schema"]({}) == {"group_a": "single", "group_b": "cct"}
+    assert entry.options == original
+    assert (await options.async_step_cancel_edit())["step_id"] == "device_menu"
+    assert entry.options == original
+
+    p210 = await options.async_step_manage_devices({"device": "modbus:22"})
+    assert p210["step_id"] == "device_menu"
+    assert (await options.async_step_output_mode())["data_schema"]({}) == {
+        "group_a": "cct"
+    }
+    assert entry.options == original
+
+    r410 = await options.async_step_manage_devices({"device": "modbus:63"})
+    assert r410["menu_options"][0] == "r410_output_configuration"
+    page = await options.async_step_r410_output_configuration()
+    assert "Garage" in page["description_placeholders"]["allocations"]
+    assert page["menu_options"] == [
+        "add_r410_cover",
+        "manage_r410_covers",
+        "back_to_device_menu",
+    ]
+    assert entry.options == original
+
+    s402_page = await _select_s402(options, 7)
+    assert s402_page["description_placeholders"]["details"] == "DI1\nDI2\nDI3\nDI4"
+    assert s402_page["menu_options"] == [
+        "remove_managed_s402",
+        "back_to_device_list",
+    ]
+    assert entry.options == original
+
+    invalid = await options.async_step_manage_devices({"device": "modbus:999"})
+    assert invalid["errors"] == {"device": "device_not_found"}
+    malformed = await options.async_step_manage_devices({"device": "bad"})
+    assert malformed["errors"] == {"device": "device_not_found"}
+    assert entry.options == original
+
+
+async def test_communication_scan_range_saves_without_scanning_or_dropping_options(
+    options, entry, hass
+):
+    original = {
+        **entry.options,
+        "scan_start": 51,
+        "scan_end": 80,
+        "future_option": {"preserve": True},
+    }
+    hass.config_entries.async_update_entry(entry, options=original)
+    await _options_ready(options)
+    form = await options.async_step_communication_scan_range()
+    assert form["step_id"] == "communication_scan_range"
+    assert form["data_schema"]({}) == {"scan_start": 51, "scan_end": 80}
+    assert (
+        await options.async_step_communication_scan_range(
+            {"scan_start": 80, "scan_end": 51}
+        )
+    )["errors"] == {"base": "invalid_range"}
+    with pytest.raises(Exception):
+        form["data_schema"]({"scan_start": 0, "scan_end": 248})
+    assert entry.options == original
+
+    with patch(
+        "custom_components.coselig_modbus_hub.config_flow.scan",
+        new=AsyncMock(),
+    ) as scanner:
+        saved = await options.async_step_communication_scan_range(
+            {"scan_start": 1, "scan_end": 247}
+        )
+    assert saved["type"] == FlowResultType.CREATE_ENTRY
+    assert saved["data"]["scan_start"] == 1
+    assert saved["data"]["scan_end"] == 247
+    assert saved["data"]["future_option"] == {"preserve": True}
+    scanner.assert_not_awaited()
+    assert entry.options == original
+
+    await options.async_step_communication()
+    assert (await options.async_step_back_to_options())["step_id"] == "init"
+    assert entry.options == original
+
+
+async def test_stale_device_routes_and_back_actions_are_navigation_only(
+    options, entry, hass
+):
+    original = {
+        **entry.options,
+        "devices": [
+            {"slave": 51, "model": "p404", "group_a": "single", "group_b": "single"},
+            {"slave": 63, "model": "r410"},
+        ],
+        "s402_devices": [{"id": 7}],
+        "future_option": "keep",
+    }
+    hass.config_entries.async_update_entry(entry, options=original)
+    await _options_ready(options)
+    assert (await options.async_step_manage_devices({"device": "bad"}))["errors"] == {
+        "device": "device_not_found"
+    }
+    assert (await options.async_step_manage_devices({"device": "unknown:2"}))[
+        "errors"
+    ] == {"device": "device_not_found"}
+    assert (await options.async_step_manage_devices({"device": None}))["errors"] == {
+        "device": "device_not_found"
+    }
+    assert (await options.async_step_manage_devices({"device": "modbus:999"}))[
+        "errors"
+    ] == {"device": "device_not_found"}
+
+    await _select_modbus(options, 63)
+    assert (await options.async_step_output_mode())["step_id"] == "device_menu"
+    assert (await options.async_step_manage_r410_covers())["menu_options"] == [
+        "back_to_r410_output_configuration"
+    ]
+    assert (await options.async_step_back_to_r410_output_configuration())[
+        "step_id"
+    ] == "r410_output_configuration"
+    assert (await options.async_step_back_to_manage_r410_covers())[
+        "step_id"
+    ] == "manage_r410_covers"
+    assert (await options.async_step_back_to_device_menu())["step_id"] == "device_menu"
+    assert (await options.async_step_back_to_device_list())[
+        "step_id"
+    ] == "manage_devices"
+    assert (await options.async_step_back_to_add_device())["step_id"] == "add_device"
+    assert (await options.async_step_cancel_add())["step_id"] == "add_device"
+    options._flow_action = "edit"
+    options._managed_id = 999
+    assert (await options.async_step_cancel_edit())["step_id"] == "manage_devices"
+
+    options._managed_kind = "invalid"
+    options._managed_id = 63
+    assert (await options.async_step_device_menu())["step_id"] == "manage_devices"
+    assert (await options.async_step_output_mode())["step_id"] == "manage_devices"
+    assert (await options.async_step_remove_managed_device())["step_id"] == (
+        "manage_devices"
+    )
+    assert (await options.async_step_s402_device_management())["step_id"] == (
+        "manage_devices"
+    )
+    assert (await options.async_step_remove_managed_s402())["step_id"] == (
+        "manage_devices"
+    )
+    assert entry.options == original
+
+
+async def test_reconfigure_flow_remains_available_for_gateway_host_and_port(
+    flow, entry
+):
+    flow.context = {"source": "reconfigure", "entry_id": entry.entry_id}
+    form = await flow.async_step_reconfigure()
+    assert form["step_id"] == "reconfigure"
+    assert form["data_schema"]({}) == entry.data
+    with (
+        patch(
+            "custom_components.coselig_modbus_hub.config_flow.validate_gateway",
+            new=AsyncMock(return_value={"host": "new-gateway.local", "port": 1502}),
+        ),
+        patch.object(
+            flow,
+            "async_update_reload_and_abort",
+            return_value={
+                "type": FlowResultType.ABORT,
+                "reason": "reconfigure_successful",
+            },
+        ) as update,
+    ):
+        result = await flow.async_step_reconfigure(
+            {"host": "new-gateway.local", "port": 1502}
+        )
+    assert result["type"] == FlowResultType.ABORT
+    assert result["reason"] == "reconfigure_successful"
+    update.assert_called_once_with(
+        entry,
+        data={"host": "new-gateway.local", "port": 1502},
+        title="Coselig new-gateway.local",
+    )
+
+
 async def test_add_r410_jumps_to_summary_and_does_not_replace_existing(options):
     await _options_ready(options)
     options._found = [63]
@@ -565,11 +813,18 @@ async def test_edit_one_device_preserves_unchanged_groups_and_summary(
     original = {**entry.options, "devices": existing, "future_option": 9}
     hass.config_entries.async_update_entry(entry, options=original)
     await _options_ready(options)
-    result = await options.async_step_edit_devices()
-    assert [item["value"] for item in _choices(result, "slave")] == ["1", "3"]
-    result = await options.async_step_edit_devices({"slave": "1"})
-    assert result["data_schema"]({})["model"] == "p404"
-    await options.async_step_model({"model": "p404"})
+    result = await options.async_step_manage_devices()
+    assert [item["value"] for item in _choices(result, "device")] == [
+        "modbus:1",
+        "modbus:3",
+    ]
+    await _select_modbus(options, 1)
+    assert (await options.async_step_device_menu())["menu_options"] == [
+        "output_mode",
+        "remove_managed_device",
+        "back_to_device_list",
+    ]
+    result = await options.async_step_output_mode()
     result = await options.async_step_groups()
     assert result["data_schema"]({}) == {"group_a": "cct", "group_b": "single"}
     result = await options.async_step_groups({"group_a": "cct", "group_b": "single"})
@@ -583,7 +838,9 @@ async def test_edit_one_device_preserves_unchanged_groups_and_summary(
     assert result["data"]["future_option"] == 9
 
 
-async def test_edit_model_change_and_r410_has_no_group_step(options, entry, hass):
+async def test_modbus_management_edits_output_mode_without_changing_model(
+    options, entry, hass
+):
     original = {
         **entry.options,
         "devices": [
@@ -593,23 +850,27 @@ async def test_edit_model_change_and_r410_has_no_group_step(options, entry, hass
     }
     hass.config_entries.async_update_entry(entry, options=original)
     await _options_ready(options)
-    await options.async_step_edit_devices({"slave": "1"})
-    result = await options.async_step_model({"model": "p210"})
+    await _select_modbus(options, 1)
+    result = await options.async_step_output_mode()
     assert result["step_id"] == "groups"
-    assert result["data_schema"]({}) == {"group_a": "single"}
-    result = await options.async_step_groups({"group_a": "single"})
+    assert result["data_schema"]({}) == {"group_a": "cct", "group_b": "cct"}
+    result = await options.async_step_groups({"group_a": "single", "group_b": "single"})
     assert result["step_id"] == "edit_summary"
     assert "P404" in result["description_placeholders"]["summary"]
-    assert "P210" in result["description_placeholders"]["summary"]
     assert entry.options == original
-    await options.async_step_cancel_edit()
-    await options.async_step_edit_devices({"slave": "1"})
-    result = await options.async_step_model({"model": "r410"})
-    assert result["step_id"] == "edit_summary"
-    assert len(options._working_devices[0].outputs) == 4
+    assert (await options.async_step_cancel_edit())["step_id"] == "device_menu"
+    saved = await options.async_step_confirm_edit()
+    assert saved["data"]["devices"][0]["model"] == "p404"
+    assert [
+        item["value"]
+        for item in _choices(await options.async_step_manage_devices(), "device")
+    ] == [
+        "modbus:1",
+        "modbus:3",
+    ]
 
 
-async def test_remove_is_separate_multi_select_and_requires_confirmation(
+async def test_remove_selected_device_requires_confirmation_and_preserves_options(
     options, entry, hass
 ):
     original = {
@@ -622,23 +883,21 @@ async def test_remove_is_separate_multi_select_and_requires_confirmation(
     }
     hass.config_entries.async_update_entry(entry, options=original)
     await _options_ready(options)
-    result = await options.async_step_remove_devices()
-    assert _choices(result, "devices") == [
-        {"value": "1", "label": "Slave 1 · P404"},
-        {"value": "3", "label": "Slave 3 · P210"},
+    result = await options.async_step_manage_devices()
+    assert _choices(result, "device") == [
+        {"value": "modbus:1", "label": "P404 #1 · 4-channel PWM dimmer"},
+        {"value": "modbus:3", "label": "P210 #3 · 2-channel PWM dimmer"},
     ]
-    assert (await options.async_step_remove_devices({"devices": []}))["errors"] == {
-        "devices": "no_devices_to_remove"
-    }
-    result = await options.async_step_remove_devices({"devices": ["3"]})
+    await _select_modbus(options, 3)
+    result = await options.async_step_remove_managed_device()
     assert result["step_id"] == "remove_summary"
-    assert "Slave 3 · P210" in result["description_placeholders"]["devices"]
+    assert "P210 #3" in result["description_placeholders"]["devices"]
     assert entry.options == original
     assert (await options.async_step_remove_summary())["step_id"] == "remove_summary"
-    assert (await options.async_step_cancel_remove())["step_id"] == "device_management"
-    await options.async_step_remove_devices({"devices": ["1"]})
+    assert (await options.async_step_cancel_remove())["step_id"] == "device_menu"
+    await options.async_step_remove_managed_device()
     result = await options.async_step_confirm_remove()
-    assert result["data"]["devices"] == [{"slave": 3, "model": "p210"}]
+    assert result["data"]["devices"] == [{"slave": 1, "model": "p404"}]
     assert result["data"]["future_option"] == [1, 2]
     assert result["data"]["poll_interval"] == original["poll_interval"]
     assert result["data"]["scan_start"] == original["scan_start"]
@@ -689,10 +948,7 @@ async def test_edit_and_remove_empty_device_lists_have_safe_back_path(
         entry, options={**entry.options, "devices": []}
     )
     await _options_ready(options)
-    assert (await options.async_step_edit_devices())["menu_options"] == [
-        "back_to_device_management"
-    ]
-    assert (await options.async_step_remove_devices())["menu_options"] == [
+    assert (await options.async_step_manage_devices())["menu_options"] == [
         "back_to_device_management"
     ]
     assert (await options.async_step_back_to_device_management())[
@@ -709,6 +965,7 @@ async def test_polling_preserves_unknown_options_and_applies_runtime_value(
     await _options_ready(options)
     assert (await options.async_step_communication())["menu_options"] == [
         "polling",
+        "communication_scan_range",
         "back_to_options",
     ]
     form = await options.async_step_polling()
@@ -747,7 +1004,7 @@ async def test_options_scan_uses_runtime_hub_and_only_saves_range_after_add(
     with patch.object(
         hub, "scan", new=AsyncMock(return_value=[ScanResult(1), ScanResult(60)])
     ) as scanner:
-        await options.async_step_add_devices()
+        await options.async_step_search_modbus()
         result = await options.async_step_scan_range({"scan_start": 51, "scan_end": 80})
         assert result["type"] == FlowResultType.SHOW_PROGRESS
         await options._scan_task
@@ -766,7 +1023,7 @@ async def test_scan_cancel_and_gateway_errors_keep_existing_options_unchanged(
         "custom_components.coselig_modbus_hub.config_flow.scan",
         new=AsyncMock(return_value=[]),
     ):
-        await options.async_step_add_devices()
+        await options.async_step_search_modbus()
         await options.async_step_scan_range({"scan_start": 1, "scan_end": 10})
         await options._scan_task
         result = await options.async_step_scan()
@@ -788,15 +1045,20 @@ async def test_native_options_save_after_explicit_add_confirmation(hass, entry):
             flow_id, {"next_step_id": "device_management"}
         )
         assert result["menu_options"] == [
-            "add_devices",
-            "edit_devices",
-            "remove_devices",
-            "s402_management",
-            "r410_cover_management",
+            "add_device",
+            "manage_devices",
             "back_to_options",
         ]
         result = await hass.config_entries.options.async_configure(
-            flow_id, {"next_step_id": "add_devices"}
+            flow_id, {"next_step_id": "add_device"}
+        )
+        assert result["menu_options"] == [
+            "search_modbus",
+            "add_s402",
+            "back_to_device_management",
+        ]
+        result = await hass.config_entries.options.async_configure(
+            flow_id, {"next_step_id": "search_modbus"}
         )
         assert result["step_id"] == "scan_range"
         result = await hass.config_entries.options.async_configure(
@@ -833,10 +1095,17 @@ async def test_native_remove_flow_requires_separate_confirm_step(hass, entry):
         flow_id, {"next_step_id": "device_management"}
     )
     result = await hass.config_entries.options.async_configure(
-        flow_id, {"next_step_id": "remove_devices"}
+        flow_id, {"next_step_id": "manage_devices"}
+    )
+    assert _choices(result, "device") == [
+        {"value": "modbus:1", "label": "P404 #1 · 4-channel PWM dimmer"},
+        {"value": "modbus:3", "label": "P210 #3 · 2-channel PWM dimmer"},
+    ]
+    result = await hass.config_entries.options.async_configure(
+        flow_id, {"device": "modbus:3"}
     )
     result = await hass.config_entries.options.async_configure(
-        flow_id, {"devices": ["3"]}
+        flow_id, {"next_step_id": "remove_managed_device"}
     )
     assert result["step_id"] == "remove_summary"
     assert entry.options == original
@@ -1007,9 +1276,8 @@ async def test_p210_edit_keeps_group_mode_and_other_options(options, entry, hass
     original = {**entry.options, "devices": configured, "future_option": "keep"}
     hass.config_entries.async_update_entry(entry, options=original)
     await _options_ready(options)
-    await options.async_step_edit_devices({"slave": "3"})
-    assert (await options.async_step_model())["data_schema"]({})["model"] == "p210"
-    await options.async_step_model({"model": "p210"})
+    await _select_modbus(options, 3)
+    await options.async_step_output_mode()
     assert (await options.async_step_groups())["data_schema"]({}) == {"group_a": "cct"}
     await options.async_step_groups({"group_a": "cct"})
     assert entry.options == original
@@ -1070,10 +1338,13 @@ def _cover_options(slave=63, *, mode="two_relay", open_relay=1, close_relay=2):
 
 
 async def _start_add_cover(options):
-    await options.async_step_device_management()
-    await options.async_step_r410_cover_management()
-    await options.async_step_add_r410_cover()
-    return await options.async_step_add_r410_cover({"slave": "63"})
+    await _open_r410_outputs(options)
+    return await options.async_step_add_r410_cover()
+
+
+async def _open_cover_management(options, slave=63):
+    await _open_r410_outputs(options, slave)
+    return await options.async_step_manage_r410_covers()
 
 
 async def _continue_add_cover(options, *, mode="two_relay", mapping=None, pulse=0.5):
@@ -1097,20 +1368,12 @@ async def test_add_two_relay_cover_free_mapping_validation_and_cancel_atomic(
     }
     hass.config_entries.async_update_entry(entry, options=original)
     await _options_ready(options)
-    assert (await options.async_step_r410_cover_management())["menu_options"] == [
+    page = await _open_r410_outputs(options)
+    assert page["menu_options"] == [
         "add_r410_cover",
-        "back_to_device_management",
+        "back_to_device_menu",
     ]
-    await options.async_step_add_r410_cover()
-    assert (await options.async_step_add_r410_cover({"slave": "bad"}))["errors"] == {
-        "slave": "cover_r410_unavailable"
-    }
-    assert (await options.async_step_add_r410_cover({"slave": "99"}))["errors"] == {
-        "slave": "cover_r410_unavailable"
-    }
-    assert (await options.async_step_add_r410_cover({"slave": "63"}))[
-        "step_id"
-    ] == "cover_name"
+    assert (await options.async_step_add_r410_cover())["step_id"] == "cover_name"
     assert (await options.async_step_cover_name({"name": "  "}))["errors"] == {
         "name": "invalid_cover_name"
     }
@@ -1150,9 +1413,9 @@ async def test_add_two_relay_cover_free_mapping_validation_and_cancel_atomic(
     assert result["step_id"] == "cover_summary"
     assert "停止：R4 + R1" in result["description_placeholders"]["summary"]
     assert "R2、R3" in result["description_placeholders"]["resource_change"]
-    assert (await options.async_step_cancel_cover())[
-        "step_id"
-    ] == "r410_cover_management"
+    assert (await options.async_step_cancel_cover())["step_id"] == (
+        "r410_output_configuration"
+    )
     assert entry.options == original
 
     await _start_add_cover(options)
@@ -1206,9 +1469,14 @@ async def test_edit_cover_retains_uuid_and_unknown_fields_across_mode_change(
     }
     hass.config_entries.async_update_entry(entry, options=original)
     await _options_ready(options)
-    await options.async_step_device_management()
-    result = await options.async_step_r410_cover_management()
+    result = await _open_r410_outputs(options)
     assert "R2" in result["description_placeholders"]["allocations"]
+    result = await options.async_step_manage_r410_covers()
+    assert result["menu_options"] == [
+        "edit_r410_cover",
+        "remove_r410_cover",
+        "back_to_r410_output_configuration",
+    ]
     await options.async_step_edit_r410_cover({"id": cover["id"]})
     await options.async_step_cover_name({"name": "店面鐵捲門"})
     await options.async_step_cover_class({"device_class": "shutter"})
@@ -1239,6 +1507,7 @@ async def test_edit_three_relay_cover_to_two_drops_stop_relay(options, entry, ha
     }
     hass.config_entries.async_update_entry(entry, options=original)
     await _options_ready(options)
+    await _open_cover_management(options)
     await options.async_step_edit_r410_cover({"id": cover["id"]})
     await options.async_step_cover_name({"name": "Garage"})
     await options.async_step_cover_class({"device_class": "garage"})
@@ -1254,6 +1523,7 @@ async def test_edit_three_relay_cover_to_two_drops_stop_relay(options, entry, ha
 async def test_three_relay_allocation_hides_add_when_only_one_relay_free(
     options, entry, hass
 ):
+    hass.config.language = "zh-Hant"
     cover = _cover_options(mode="three_relay", open_relay=1, close_relay=3)
     cover["stop_relay"] = 2
     hass.config_entries.async_update_entry(
@@ -1265,9 +1535,9 @@ async def test_three_relay_allocation_hides_add_when_only_one_relay_free(
         },
     )
     await _options_ready(options)
-    result = await options.async_step_r410_cover_management()
+    result = await _open_r410_outputs(options)
     assert "add_r410_cover" not in result["menu_options"]
-    assert "Relay 4" in result["description_placeholders"]["allocations"]
+    assert "R4：一般 Relay" in result["description_placeholders"]["allocations"]
     result = await options.async_step_add_r410_cover()
     assert "至少需要 2 個未使用 Relay" in result["description_placeholders"]["reason"]
 
@@ -1284,6 +1554,7 @@ async def test_remove_cover_requires_confirmation_and_restores_resources(
     }
     hass.config_entries.async_update_entry(entry, options=original)
     await _options_ready(options)
+    await _open_cover_management(options)
     assert (await options.async_step_remove_r410_cover())[
         "step_id"
     ] == "remove_r410_cover"
@@ -1293,7 +1564,8 @@ async def test_remove_cover_requires_confirmation_and_restores_resources(
     assert entry.options == original
     assert (await options.async_step_cancel_remove_cover())[
         "step_id"
-    ] == "r410_cover_management"
+    ] == "manage_r410_covers"
+    await options.async_step_manage_r410_covers()
     await options.async_step_remove_r410_cover({"id": cover["id"]})
     result = await options.async_step_confirm_remove_cover()
     assert result["data"]["r410_covers"] == []
@@ -1313,6 +1585,7 @@ async def test_remove_one_cover_preserves_other_cover_record(options, entry, has
     }
     hass.config_entries.async_update_entry(entry, options=original)
     await _options_ready(options)
+    await _open_cover_management(options, 63)
     await options.async_step_remove_r410_cover({"id": first["id"]})
     result = await options.async_step_confirm_remove_cover()
     assert result["data"]["r410_covers"] == [second]
@@ -1348,12 +1621,13 @@ async def test_cancel_edit_cover_does_not_persist(options, entry, hass):
     }
     hass.config_entries.async_update_entry(entry, options=original)
     await _options_ready(options)
+    await _open_cover_management(options)
     await options.async_step_edit_r410_cover({"id": cover["id"]})
     await options.async_step_cover_name({"name": "Changed name"})
     await options.async_step_cover_class({"device_class": "shutter"})
     assert entry.options == original
     assert (await options.async_step_cancel_cover())["step_id"] == (
-        "r410_cover_management"
+        "manage_r410_covers"
     )
     assert entry.options == original
 
@@ -1373,7 +1647,8 @@ async def test_removing_r410_cascades_cover_only_after_confirmation(
     }
     hass.config_entries.async_update_entry(entry, options=original)
     await _options_ready(options)
-    summary = await options.async_step_remove_devices({"devices": ["63"]})
+    await _select_modbus(options, 63)
+    summary = await options.async_step_remove_managed_device()
     assert "Garage" in summary["description_placeholders"]["covers"]
     assert entry.options == original
     saved = await options.async_step_confirm_remove()
@@ -1382,7 +1657,9 @@ async def test_removing_r410_cascades_cover_only_after_confirmation(
     assert saved["data"]["future_option"] == {"preserve": True}
 
 
-async def test_changing_r410_model_cascades_cover(options, entry, hass):
+async def test_r410_management_has_no_model_change_and_remove_cascades_cover(
+    options, entry, hass
+):
     cover = _cover_options()
     original = {
         **entry.options,
@@ -1392,14 +1669,13 @@ async def test_changing_r410_model_cascades_cover(options, entry, hass):
     }
     hass.config_entries.async_update_entry(entry, options=original)
     await _options_ready(options)
-    await options.async_step_edit_devices({"slave": "63"})
-    await options.async_step_model({"model": "p404"})
-    await options.async_step_groups({"group_a": "single", "group_b": "single"})
-    summary = await options.async_step_edit_summary()
-    assert "Garage" in summary["description_placeholders"]["cover_removals"]
+    menu = await _select_modbus(options, 63)
+    assert "output_mode" not in menu["menu_options"]
+    summary = await options.async_step_remove_managed_device()
+    assert "Garage" in summary["description_placeholders"]["covers"]
     assert entry.options == original
-    saved = await options.async_step_confirm_edit()
-    assert saved["data"]["devices"][0]["model"] == "p404"
+    saved = await options.async_step_confirm_remove()
+    assert saved["data"]["devices"] == []
     assert saved["data"]["r410_covers"] == []
     assert saved["data"]["future_option"] == "preserve"
 
@@ -1423,6 +1699,7 @@ async def test_corrupt_persisted_cover_options_return_controlled_abort(
 async def test_empty_management_and_stale_cover_selections_are_controlled(
     options, entry, hass
 ):
+    hass.config.language = "zh-Hant"
     original = {
         **entry.options,
         "devices": [{"slave": 1, "model": "p404"}],
@@ -1430,22 +1707,22 @@ async def test_empty_management_and_stale_cover_selections_are_controlled(
     }
     hass.config_entries.async_update_entry(entry, options=original)
     await _options_ready(options)
-    management = await options.async_step_r410_cover_management()
-    assert management["menu_options"] == ["back_to_device_management"]
-    assert "尚未設定 R410" in management["description_placeholders"]["allocations"]
+    await _select_modbus(options, 1)
+    management = await options.async_step_r410_output_configuration()
+    assert management["step_id"] == "device_menu"
     assert (await options.async_step_edit_r410_cover())["step_id"] == "edit_r410_cover"
     assert (await options.async_step_remove_r410_cover())["step_id"] == (
         "remove_r410_cover"
     )
     assert (await options.async_step_remove_cover_summary())["step_id"] == (
-        "r410_cover_management"
+        "device_menu"
     )
     assert (await options.async_step_confirm_remove_cover())["step_id"] == (
-        "r410_cover_management"
+        "device_menu"
     )
-    assert (await options.async_step_back_to_r410_cover_management())["step_id"] == (
-        "r410_cover_management"
-    )
+    assert (await options.async_step_back_to_r410_output_configuration())[
+        "step_id"
+    ] == ("device_menu")
 
     cover = _cover_options()
     configured = {
@@ -1458,11 +1735,15 @@ async def test_empty_management_and_stale_cover_selections_are_controlled(
     }
     hass.config_entries.async_update_entry(entry, options=configured)
     await _options_ready(options)
-    management = await options.async_step_r410_cover_management()
-    assert (
-        "一般 Switch：Relay 3、Relay 4"
-        in management["description_placeholders"]["allocations"]
-    )
+    management = await _open_r410_outputs(options, 63)
+    assert "R3：一般 Relay" in management["description_placeholders"]["allocations"]
+    assert "R4：一般 Relay" in management["description_placeholders"]["allocations"]
+    assert management["menu_options"] == [
+        "add_r410_cover",
+        "manage_r410_covers",
+        "back_to_device_menu",
+    ]
+    await options.async_step_manage_r410_covers()
     assert (await options.async_step_edit_r410_cover())["step_id"] == (
         "edit_r410_cover"
     )
@@ -1516,7 +1797,7 @@ async def test_cover_summary_and_confirmation_revalidate_allocations(
     options._cover_draft = dict(existing)
     options._cover_action = "add"
     result = await options.async_step_confirm_cover()
-    assert result["step_id"] == "r410_cover_management"
+    assert result["step_id"] == "r410_output_configuration"
 
     # A concurrently-added Cover may consume the draft's relays before confirmation.
     concurrent = _cover_options(open_relay=3, close_relay=4)
@@ -1546,19 +1827,20 @@ async def test_edit_missing_cover_and_remove_confirmation_guards(options, entry,
         },
     )
     await _options_ready(options)
+    await _open_r410_outputs(options)
     options._cover_draft = {}
     assert (await options.async_step_confirm_cover())["step_id"] == (
-        "r410_cover_management"
+        "r410_output_configuration"
     )
     options._cover_action = "edit"
     options._cover_draft = _cover_options()
     result = await options.async_step_confirm_cover()
-    assert result["step_id"] == "r410_cover_management"
+    assert result["step_id"] == "r410_output_configuration"
 
     options._cover_action = "edit"
     options._cover_draft = {**cover, "id": uuid4().hex}
     result = await options.async_step_confirm_cover()
-    assert result["step_id"] == "r410_cover_management"
+    assert result["step_id"] == "r410_output_configuration"
 
     second = _cover_options(open_relay=3, close_relay=4)
     hass.config_entries.async_update_entry(
@@ -1566,6 +1848,7 @@ async def test_edit_missing_cover_and_remove_confirmation_guards(options, entry,
         options={**entry.options, "r410_covers": [cover, second]},
     )
     await _options_ready(options)
+    await _open_cover_management(options)
     assert (await options.async_step_edit_r410_cover())["step_id"] == (
         "edit_r410_cover"
     )
@@ -1574,5 +1857,5 @@ async def test_edit_missing_cover_and_remove_confirmation_guards(options, entry,
     options._cover_action = "edit"
     options._cover_draft = {**cover, "id": uuid4().hex}
     result = await options.async_step_confirm_cover()
-    assert result["step_id"] == "r410_cover_management"
+    assert result["step_id"] == "r410_output_configuration"
     assert entry.options["r410_covers"] == [cover, second]

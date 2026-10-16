@@ -2,7 +2,6 @@ import asyncio
 from unittest.mock import Mock, patch
 
 import pytest
-from homeassistant.data_entry_flow import FlowResultType
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import area_registry as ar
 from homeassistant.helpers import device_registry as dr
@@ -210,7 +209,10 @@ async def test_r410_native_registry_poll_zero_reload_options_rescan(
         flow_id, {"next_step_id": "device_management"}
     )
     await hass.config_entries.options.async_configure(
-        flow_id, {"next_step_id": "add_devices"}
+        flow_id, {"next_step_id": "add_device"}
+    )
+    await hass.config_entries.options.async_configure(
+        flow_id, {"next_step_id": "search_modbus"}
     )
     await hass.config_entries.options.async_configure(
         flow_id, {"scan_start": 70, "scan_end": 70}
@@ -220,26 +222,30 @@ async def test_r410_native_registry_poll_zero_reload_options_rescan(
     assert result["step_id"] == "scan_no_new"
     assert len(entry.options["devices"]) == 3
     result = await hass.config_entries.options.async_configure(
+        flow_id, {"next_step_id": "back_to_add_device"}
+    )
+    result = await hass.config_entries.options.async_configure(
         flow_id, {"next_step_id": "back_to_device_management"}
     )
     result = await hass.config_entries.options.async_configure(
-        flow_id, {"next_step_id": "edit_devices"}
+        flow_id, {"next_step_id": "manage_devices"}
     )
-    result = await hass.config_entries.options.async_configure(flow_id, {"slave": "70"})
     result = await hass.config_entries.options.async_configure(
-        flow_id, {"model": "r410"}
+        flow_id, {"device": "modbus:70"}
     )
-    assert result["step_id"] == "edit_summary"
+    assert result["menu_options"] == [
+        "r410_output_configuration",
+        "remove_managed_device",
+        "back_to_device_list",
+    ]
     result = await hass.config_entries.options.async_configure(
-        flow_id, {"next_step_id": "confirm_edit"}
+        flow_id, {"next_step_id": "r410_output_configuration"}
     )
-    assert result["type"] == FlowResultType.CREATE_ENTRY
-    await hass.async_block_till_done()
-    assert {device["model"] for device in entry.options["devices"]} == {
-        "p404",
-        "p210",
-        "r410",
-    }
+    assert result["menu_options"] == ["add_r410_cover", "back_to_device_menu"]
+    await hass.config_entries.options.async_configure(
+        flow_id, {"next_step_id": "back_to_device_menu"}
+    )
+    assert entry.options["devices"][0]["model"] == "r410"
     assert {
         e.entity_id for e in er.async_entries_for_config_entry(registry, entry.entry_id)
     } == {e.entity_id for e in entities}
