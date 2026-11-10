@@ -127,7 +127,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: CoseligConfigEntry) -> b
         await hub.start()
     except (ConnectionError, TimeoutError) as error:
         await hub.stop()
-        raise ConfigEntryNotReady("Cannot connect to gateway") from error
+        raise ConfigEntryNotReady(str(error)) from error
     except BaseException:
         await hub.stop()
         raise

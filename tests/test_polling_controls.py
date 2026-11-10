@@ -139,6 +139,7 @@ async def test_round_timing_excludes_wait_and_rolling_average(hass):
 
 
 async def test_paused_reconnect_does_not_issue_read(hub, gateway):
+    await hub.transport.disconnect()
     hub.coordinator.gateway_lost()
     gateway.requests.clear()
 

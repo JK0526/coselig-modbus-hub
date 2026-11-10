@@ -80,7 +80,7 @@ async def test_all_failed_round_rebuilds(gateway, coordinator):
     gateway.modes.update({1: "timeout", 2: "timeout"})
     await coordinator.async_poll_round()
     assert not coordinator.transport.connected
-    assert coordinator.gateway_available
+    assert not coordinator.gateway_available
     assert coordinator.states[1].available
     gateway.modes.clear()
     await coordinator.async_poll_round()
@@ -180,17 +180,22 @@ async def test_loop_reconnect_reset_and_immediate_poll(coordinator):
         nonlocal rounds
         rounds += 1
         assert coordinator.gateway_available
-        assert coordinator._backoff_index == 0
+        assert coordinator._backoff_index == 2
         coordinator._closed = True
 
     async def sleep(delay):
         delays.append(delay)
 
+    async def connect():
+        if len(delays) == 1:
+            raise GatewayError
+        coordinator.gateway_restored()
+
     with (
         patch.object(
             coordinator.transport,
             "connect",
-            new=AsyncMock(side_effect=[GatewayError(), None]),
+            new=AsyncMock(side_effect=connect),
         ),
         patch.object(coordinator, "async_poll_round", new=poll),
         patch(
@@ -200,9 +205,7 @@ async def test_loop_reconnect_reset_and_immediate_poll(coordinator):
         await coordinator._loop()
     assert delays[:2] == [1, 2]
     assert rounds == 1
-    coordinator._closed = False
-    coordinator.gateway_lost()
-    assert coordinator.next_backoff() == 1
+    assert coordinator.next_backoff() == 4
 
 
 async def test_reconnect_notifies_listeners_for_empty_s402_only_gateway(hass):
@@ -212,6 +215,7 @@ async def test_reconnect_notifies_listeners_for_empty_s402_only_gateway(hass):
     updates = Mock()
 
     async def connect_once():
+        coordinator.gateway_restored()
         coordinator._closed = True
 
     with (
@@ -343,3 +347,89 @@ async def test_native_coordinator_manual_refresh(coordinator, gateway):
     assert coordinator.last_update_success
     assert all(state.available for state in coordinator.states.values())
     assert [r[0] for r in gateway.requests] == [1, 2]
+
+
+@pytest.mark.parametrize("mode", ["exception", "invalid_value"])
+async def test_all_slave_errors_keep_healthy_tcp(gateway, coordinator, mode):
+    await coordinator.async_poll_round()
+    for slave, count in ((1, 4), (2, 2)):
+        if mode == "exception":
+            gateway.modes[slave] = mode
+        else:
+            gateway.registers[slave] = [101] * count
+    for failures in range(1, 4):
+        await coordinator.async_poll_round()
+        assert coordinator.gateway_available and coordinator.transport.connected
+        assert all(
+            state.consecutive_failures == failures and state.available == (failures < 3)
+            for state in coordinator.states.values()
+        )
+    assert gateway.connections == 1
+
+
+@pytest.mark.parametrize("pause_mode", ["disabled", "paused"])
+@pytest.mark.parametrize("failure", ["timeout", "eof"])
+async def test_idle_scheduler_recovers_tcp_without_polling(
+    gateway, coordinator, monkeypatch, pause_mode, failure
+):
+    await coordinator.async_poll_round()
+    transport = coordinator.transport
+    reader, worker = transport._reader_task, transport._worker
+    if pause_mode == "disabled":
+        coordinator.set_poll_interval(0)
+    else:
+        coordinator.set_runtime_poll_paused(True)
+    monkeypatch.setattr(coordinator, "next_backoff", lambda: 0)
+    coordinator.start()
+    await asyncio.sleep(0)
+    gateway.requests.clear()
+    request = write(1, 0x082A, 80)
+    key = (1, "ch1", "brightness")
+    if failure == "timeout":
+        gateway.modes[1] = "timeout"
+        with pytest.raises(TimeoutError):
+            await coordinator.async_command(1, request, key)
+        gateway.modes.clear()
+        expected = [request]
+    else:
+        writer = next(iter(gateway.writers))
+        writer.close()
+        await writer.wait_closed()
+        expected = []
+    async with asyncio.timeout(2):
+        while gateway.connections != 2 or not coordinator.gateway_available:
+            await asyncio.sleep(0.001)
+    assert gateway.requests == expected
+    assert len(gateway.writers) == 1
+    assert reader.done()
+    assert transport._reader_task is not reader
+    assert transport._worker is worker
+    await coordinator.async_command(1, request, key)
+    assert gateway.requests == [*expected, request]
+
+
+async def test_repeated_poll_disconnect_backs_off_until_a_slave_replies(
+    gateway, coordinator, monkeypatch
+):
+    await coordinator.async_poll_round()
+    gateway.modes[1] = "disconnect"
+    delays = []
+    next_backoff = coordinator.next_backoff
+
+    def record_backoff():
+        delays.append(next_backoff())
+        if len(delays) == 3:
+            gateway.modes.clear()
+        return 0
+
+    monkeypatch.setattr(coordinator, "next_backoff", record_backoff)
+    coordinator.start()
+    async with asyncio.timeout(2):
+        while len(delays) < 3 or not all(
+            state.available for state in coordinator.states.values()
+        ):
+            await asyncio.sleep(0.001)
+    assert delays == [1, 2, 4]
+    assert next_backoff() == 1
+    assert gateway.connections == 4
+    assert len(gateway.writers) == 1

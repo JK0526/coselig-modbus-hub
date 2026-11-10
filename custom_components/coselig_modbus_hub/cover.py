@@ -53,7 +53,7 @@ class CoseligR410Cover(CoordinatorEntity[Coordinator], CoverEntity):
         self._attr_device_info = DeviceInfo(
             identifiers={cover_device_identifier(entry_id, config.slave)}
         )
-        self._last_available = self.available
+        self._last_slave_available = coordinator.states[config.slave].available
 
     @property
     def available(self) -> bool:
@@ -64,11 +64,12 @@ class CoseligR410Cover(CoordinatorEntity[Coordinator], CoverEntity):
 
     @callback
     def _handle_coordinator_update(self) -> None:
-        """Drop assumed state across any loss and recovery of availability."""
-        available = self.available
-        if not available or not self._last_available:
+        """Drop assumed state when the slave loses confirmed health."""
+        # A soft TCP reset temporarily blocks commands without clearing slave health.
+        available = self.coordinator.states[self.config.slave].available
+        if not available or not self._last_slave_available:
             self._attr_is_closed = None
-        self._last_available = available
+        self._last_slave_available = available
         self.async_write_ha_state()
 
     async def _action(self, action: str) -> None:

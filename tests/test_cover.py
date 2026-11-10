@@ -1,5 +1,6 @@
 """R410 Cover actions and entity/registry lifecycle regressions."""
 
+import asyncio
 from unittest.mock import Mock
 from uuid import uuid4
 
@@ -163,8 +164,18 @@ async def test_timeout_returns_homeassistant_error_without_retry(cover_runtime):
     assert coordinator.states[63].available
 
 
-async def test_failed_open_close_and_stop_preserve_last_successful_state(cover_runtime):
-    _coordinator, cover, gateway = cover_runtime
+async def test_failed_open_close_and_stop_preserve_last_successful_state(
+    cover_runtime, monkeypatch
+):
+    coordinator, cover, gateway = cover_runtime
+    monkeypatch.setattr(coordinator, "next_backoff", lambda: 0)
+    coordinator.start()
+    unsubscribe = coordinator.async_add_listener(cover._handle_coordinator_update)
+
+    async def wait_for_reconnect():
+        async with asyncio.timeout(2):
+            while not cover.available:
+                await asyncio.sleep(0.001)
 
     await cover.async_close_cover()
     assert cover.is_closed is True
@@ -176,6 +187,8 @@ async def test_failed_open_close_and_stop_preserve_last_successful_state(cover_r
     assert cover.is_closed is True
 
     gateway.modes[63] = "normal"
+    await wait_for_reconnect()
+    assert cover.is_closed is True
     await cover.async_open_cover()
     assert cover.is_closed is False
 
@@ -184,10 +197,12 @@ async def test_failed_open_close_and_stop_preserve_last_successful_state(cover_r
     with pytest.raises(HomeAssistantError, match="no automatic retry"):
         await cover.async_close_cover()
     assert cover.is_closed is False
+    await wait_for_reconnect()
     with pytest.raises(HomeAssistantError, match="no automatic retry"):
         await cover.async_stop_cover()
     assert cover.is_closed is False
     assert len(gateway.requests) == 2
+    unsubscribe()
 
 
 async def test_assumed_state_resets_on_device_and_gateway_availability_changes(

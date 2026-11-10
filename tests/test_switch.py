@@ -303,6 +303,7 @@ async def test_paused_relay_reconnect_preserves_last_known_false_coils(relays, g
     coordinator, entities = relays
     gateway.coils[70] = [False] * 4
     await coordinator.async_poll_round()
+    await coordinator.transport.disconnect()
     coordinator.gateway_lost()
     gateway.requests.clear()
 

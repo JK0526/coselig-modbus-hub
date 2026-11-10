@@ -53,6 +53,7 @@ class Coordinator(DataUpdateCoordinator[dict[int, DeviceState]]):
         )
         self.states = {device.slave: DeviceState() for device in devices}
         self.gateway_available = True
+        self.gateway_failed = False
         self.scanning = False
         self._runtime_poll_paused = False
         self._round_lock = asyncio.Lock()
@@ -60,6 +61,10 @@ class Coordinator(DataUpdateCoordinator[dict[int, DeviceState]]):
         self._backoff_index = 0
         self._closed = False
         self._schedule_wake = asyncio.Event()
+        self._waiting_for_schedule = False
+        transport.on_connected = self.gateway_restored
+        transport.on_stream_reset = self.stream_reset
+        transport.on_connection_lost = self.gateway_lost
         self._round_times: deque[float] = deque(maxlen=20)
         self.async_set_updated_data(self.states)
 
@@ -105,22 +110,47 @@ class Coordinator(DataUpdateCoordinator[dict[int, DeviceState]]):
         return True
 
     async def _wait_for_schedule(self, timeout: float | None = None) -> None:
+        self._waiting_for_schedule = True
         try:
             async with asyncio.timeout(timeout):
                 await self._schedule_wake.wait()
         except TimeoutError:
             pass
-        self._schedule_wake.clear()
+        finally:
+            self._waiting_for_schedule = False
+            self._schedule_wake.clear()
 
     def next_backoff(self) -> int:
         delay = BACKOFF[min(self._backoff_index, len(BACKOFF) - 1)]
         self._backoff_index += 1
         return delay
 
+    def stream_reset(self) -> None:
+        """Schedule TCP recovery without changing per-slave health."""
+        self.gateway_available = False
+        # A round already in progress will check the connection when it ends.
+        if self._waiting_for_schedule:
+            self._schedule_wake.set()
+        self.async_set_updated_data(self.states)
+
+    def gateway_restored(self) -> None:
+        if self.gateway_available:
+            return
+        self.gateway_available = True
+        self.gateway_failed = False
+        _LOGGER.info("Gateway TCP connected")
+        if self.background_polling_paused or not self.devices:
+            self._backoff_index = 0
+        if self.background_polling_paused:
+            for state in self.states.values():
+                state.available = state.populated and state.consecutive_failures < 3
+        self.async_set_updated_data(self.states)
+
     def gateway_lost(self) -> None:
         if self.gateway_available:
             _LOGGER.warning("Gateway lost")
         self.gateway_available = False
+        self.gateway_failed = True
         self._schedule_wake.set()
         self.transport.discard_controls()
         for state in self.states.values():
@@ -142,7 +172,6 @@ class Coordinator(DataUpdateCoordinator[dict[int, DeviceState]]):
                 )
 
     async def _poll_devices(self, *, background: bool) -> None:
-        successes = 0
         for device in self.devices:
             if background and self.background_polling_paused:
                 return
@@ -167,7 +196,7 @@ class Coordinator(DataUpdateCoordinator[dict[int, DeviceState]]):
                     _LOGGER.warning("Slave #%s unavailable", device.slave)
                     state.available = False
             else:
-                successes += 1
+                self._backoff_index = 0
                 if not state.available and state.consecutive_failures >= 3:
                     _LOGGER.info("Slave #%s restored", device.slave)
                 state.holding_registers = data.holding_registers
@@ -178,9 +207,6 @@ class Coordinator(DataUpdateCoordinator[dict[int, DeviceState]]):
                 state.consecutive_failures = 0
                 state.available = True
             self.async_set_updated_data(self.states)
-        if self.devices and not successes:
-            # Not proof of TCP outage: retain per-slave failure thresholds.
-            await self.transport.disconnect()
 
     async def async_command(self, slave: int, request: bytes, key: CommandKey) -> None:
         if (
@@ -227,18 +253,6 @@ class Coordinator(DataUpdateCoordinator[dict[int, DeviceState]]):
                         await self.transport.connect()
                 except GatewayError:
                     continue
-                self.gateway_available = True
-                self._backoff_index = 0
-                _LOGGER.info("Gateway restored")
-                if self.background_polling_paused:
-                    # No reconnect FC03 while paused. Restore previously confirmed health.
-                    for state in self.states.values():
-                        state.available = (
-                            state.populated and state.consecutive_failures < 3
-                        )
-                # Event-only entities depend on gateway health even when there
-                # are no pollable devices or polling is paused.
-                self.async_set_updated_data(self.states)
             if self.background_polling_paused:
                 await self._wait_for_schedule()
                 continue

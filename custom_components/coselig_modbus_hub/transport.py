@@ -93,6 +93,9 @@ class Transport:
         self.trace = trace
         self.on_s402_event = on_s402_event
         self.on_connection_lost = on_connection_lost
+        self.on_connected: Callable[[], None] | None = None
+        self.on_stream_reset: Callable[[], None] | None = None
+        self._connection_lock = asyncio.Lock()
         self._controls: OrderedDict[CommandKey | ActionSlot, Pending] = OrderedDict()
         self._next_action_sequence = 0
         self._polls: deque[Pending] = deque()
@@ -140,6 +143,10 @@ class Transport:
         return len(self._polls)
 
     async def connect(self) -> None:
+        async with self._connection_lock:
+            await self._connect()
+
+    async def _connect(self) -> None:
         if self._closed:
             raise OfflineError("Transport closed")
         if self.connected:
@@ -160,7 +167,14 @@ class Transport:
             self._read_loop(reader), name="coselig-rx"
         )
 
+        if self.on_connected is not None:
+            self.on_connected()
+
     async def disconnect(self) -> None:
+        async with self._connection_lock:
+            await self._disconnect()
+
+    async def _disconnect(self) -> None:
         self._disconnecting = True
         try:
             reader_task, self._reader_task = self._reader_task, None
@@ -231,7 +245,6 @@ class Transport:
         """Report unexpected stream loss once; Coordinator owns reconnect policy."""
         if self._disconnecting or self._loss_reported:
             return
-        self._loss_reported = True
         self._reader = None
         writer, self._writer = self._writer, None
         pending, self._pending_response = self._pending_response, None
@@ -241,6 +254,12 @@ class Transport:
         if writer is not None:
             writer.close()
         _LOGGER.debug("Gateway RX stream ended", exc_info=error)
+        self._notify_connection_lost()
+
+    def _notify_connection_lost(self) -> None:
+        if self._loss_reported:
+            return
+        self._loss_reported = True
         if self.on_connection_lost is not None:
             try:
                 self.on_connection_lost()
@@ -415,8 +434,14 @@ class Transport:
                 if isinstance(error, CRCError):
                     self.statistics.crc_error_count += 1
                 if not isinstance(error, DeviceException):
-                    self.discard_controls()
-                    await self.disconnect()
+                    # Keep reset notification ordered with socket replacement.
+                    async with self._connection_lock:
+                        self.discard_controls()
+                        await self._disconnect()
+                        if isinstance(error, GatewayError):
+                            self._notify_connection_lost()
+                        elif self.on_stream_reset is not None:
+                            self.on_stream_reset()
                 if not item.future.done():
                     item.future.set_exception(error)
 

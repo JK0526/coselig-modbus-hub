@@ -24,9 +24,13 @@ async def test_initial_offline_retry_and_cleanup(hass, entry):
     hub = Hub.create(hass, "offline", 502, (), 2)
     with (
         patch("custom_components.coselig_modbus_hub.Hub.create", return_value=hub),
-        patch.object(hub, "start", new=AsyncMock(side_effect=GatewayError())),
+        patch.object(
+            hub,
+            "start",
+            new=AsyncMock(side_effect=GatewayError("Cannot connect to gateway")),
+        ),
     ):
-        with pytest.raises(ConfigEntryNotReady):
+        with pytest.raises(ConfigEntryNotReady, match="Cannot connect to gateway"):
             await async_setup_entry(hass, entry)
     assert hub.transport._closed
 
@@ -306,19 +310,39 @@ async def test_clean_break_version(hass, entry):
         await async_setup_entry(hass, old)
 
 
-async def test_hub_start_tcp_loss_in_initial_poll(hass):
-    hub = Hub.create(hass, "test", 502, (), 2)
+async def test_hub_start_tcp_loss_in_initial_poll(hass, entry, gateway):
+    hub = Hub.create(hass, "127.0.0.1", gateway.port, (Device(1, Model.P404),), 2)
+    gateway.modes[1] = "disconnect"
+    with patch("custom_components.coselig_modbus_hub.Hub.create", return_value=hub):
+        with pytest.raises(
+            ConfigEntryNotReady, match="Gateway lost during initial poll"
+        ):
+            await async_setup_entry(hass, entry)
+    assert hub.transport._closed
+    assert hub.transport._worker is None
+    assert hub.transport._reader_task is None
+    assert hub.coordinator._task is None
 
-    async def poll():
-        hub.coordinator.gateway_lost()
 
-    with (
-        patch.object(hub.transport, "connect", new=AsyncMock()),
-        patch.object(hub.coordinator, "async_poll_round", new=poll),
-    ):
-        with pytest.raises(ConnectionError):
-            await hub.start()
-    await hub.stop()
+async def test_initial_slave_timeout_loads_and_recovers_with_poll_disabled(
+    hass, gateway
+):
+    hub = Hub.create(hass, "127.0.0.1", gateway.port, (Device(1, Model.P210),), 0)
+    hub.transport.timeout = 0.05
+    gateway.modes[1] = "timeout"
+    try:
+        await hub.start()
+        assert not hub.coordinator.gateway_available
+        assert not hub.coordinator.gateway_failed
+        assert hub.coordinator.states[1].consecutive_failures == 1
+        async with asyncio.timeout(3):
+            while not hub.coordinator.gateway_available:
+                await asyncio.sleep(0.001)
+        assert hub.transport.connected
+        assert gateway.connections == 2
+        assert len(gateway.requests) == 1
+    finally:
+        await hub.stop()
 
 
 async def test_real_ha_platform_and_registry(hass, entry, gateway):

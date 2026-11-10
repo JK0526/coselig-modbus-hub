@@ -28,7 +28,6 @@ class Hub:
 
     def __post_init__(self) -> None:
         self.transport.on_s402_event = self._dispatch_s402_event
-        self.transport.on_connection_lost = self.coordinator.gateway_lost
 
     @classmethod
     def create(
@@ -80,7 +79,7 @@ class Hub:
     async def start(self) -> None:
         await self.transport.connect()
         await self.coordinator.async_poll_round()
-        if not self.coordinator.gateway_available:
+        if self.coordinator.gateway_failed:
             raise ConnectionError("Gateway lost during initial poll")
         self.coordinator.start()
 
