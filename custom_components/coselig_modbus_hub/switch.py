@@ -96,7 +96,7 @@ class CoseligSwitch(CoordinatorEntity[Coordinator], SwitchEntity):
         self.async_write_ha_state()
 
     async def _set_state(self, value: bool) -> None:
-        if not self.available or self.coordinator.scanning:
+        if not self.coordinator.can_control(self.device.slave):
             raise HomeAssistantError("Coselig device unavailable or scanning")
         self._optimistic_at = asyncio.get_running_loop().time()
         self._attr_is_on = value

@@ -193,10 +193,11 @@
         "description": "No devices are configured.",
         "menu_options": {"back_to_device_management": "Back to previous step"}
       },
+      "edit_model": {"title": "Correct device model", "description": "Group A settings are kept. Changing P404 to P210 removes Group B entities. Check automations that use those entities before confirming.", "data": {"model": "Device model"}},
       "device_menu": {
         "title": "Device management",
         "description": "{device}\n{details}",
-        "menu_options": {"output_mode": "Output mode", "r410_output_configuration": "Output configuration", "remove_managed_device": "Remove device", "back_to_device_list": "Back to previous step"}
+        "menu_options": {"edit_model": "Correct model", "output_mode": "Output mode", "r410_output_configuration": "Output configuration", "remove_managed_device": "Remove device", "back_to_device_list": "Back to previous step"}
       },
       "s402_device_management": {
         "title": "S402 device",
@@ -221,6 +222,6 @@
     },
     "error": {"invalid_range": "Start must not exceed end.", "invalid_poll_interval": "Interval must be 0 or at least 0.5 seconds.", "no_devices": "Select at least one new device to add.", "no_devices_to_remove": "Select at least one device to remove.", "cover_r410_unavailable": "Choose an R410 with at least two unallocated Relays.", "invalid_cover_name": "Enter a non-empty Cover name.", "invalid_cover_device_class": "Choose a valid Home Assistant Cover device class or leave it blank.", "invalid_cover_mode": "Choose a valid two-relay or three-relay mode.", "insufficient_cover_relays": "At least 2 unused Relays are required; three-relay mode requires 3.", "invalid_cover_relays": "Choose distinct unused Relays for this Cover.", "invalid_cover_pulse": "Pulse duration must be 0.1–25.0 seconds in 0.1-second steps.", "cover_not_found": "This Cover no longer exists. Return to Cover management and try again.", "device_not_found": "The selected device was not found. Select it again."},
     "progress": {"scan": "Scanning {current}/{total}; found {found} devices."},
-    "abort": {"invalid_stored_options": "Stored device or R410 Cover settings are invalid. Correct the options before continuing."}
+    "abort": {"options_changed": "Options changed in another session. Reopen the options flow.", "invalid_stored_options": "Stored device or R410 Cover settings are invalid. Correct the options before continuing."}
   }
 }

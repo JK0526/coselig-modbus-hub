@@ -34,7 +34,7 @@ from .r410_cover import (
     r410_covers_from_options,
 )
 from .s402 import S402_ID_MAX, S402_ID_MIN, s402_devices_from_options
-from .scanner import ScanResult, scan
+from .scanner import Confidence, ScanResult, scan
 from .transport import GatewayError, Transport
 
 MODEL_LABELS = {
@@ -111,7 +111,6 @@ class ProfileFlow:
         }
         self._existing: dict[int, Device] = {}
         self._existing_raw: dict[int, dict[str, Any]] = {}
-        self._existing_raw_devices: list[dict[str, Any]] = []
         self._found: list[int] = []
         self._detections: dict[int, ScanResult] = {}
         self._selected: list[int] = []
@@ -384,16 +383,16 @@ class ProfileFlow:
         if isinstance(self, CoseligOptionsFlow):
             updated = self._copy_options()
             existing = list(updated.get("s402_devices", []))
+            if device_id in s402_devices_from_options(updated) or any(
+                device.slave == 1 for device in devices_from_options(updated)
+            ):
+                return self.async_abort(reason="options_changed")
             existing.append({"id": device_id})
             updated["s402_devices"] = existing
             return self.async_create_entry(data=updated)
         self._options["devices"] = []
         self._options["s402_devices"] = [{"id": device_id}]
-        return self.async_create_entry(
-            title=f"Coselig {self._gateway['host']}",
-            data=self._gateway,
-            options=self._options,
-        )
+        return self._create_gateway_entry()
 
     async def async_step_cancel_s402(
         self, user_input: dict[str, Any] | None = None
@@ -436,7 +435,20 @@ class ProfileFlow:
             self._index += 1
             return await self.async_step_model()
         old = self._edit_old if self._flow_action == "edit" else None
-        default = old.model if old else detection.recommended or Model.P404
+        default = (
+            old.model
+            if old
+            else (
+                detection.recommended
+                if detection.confidence == Confidence.HIGH
+                else None
+            )
+        )
+        model_field = (
+            vol.Required("model", default=default.value)
+            if default
+            else vol.Required("model")
+        )
         return self.async_show_form(
             step_id="model",
             description_placeholders={
@@ -446,14 +458,16 @@ class ProfileFlow:
                 if detection.recommended
                 else "—",
                 "model_reason": (
-                    "目前可確認為 PWM 調光器，但 P404／P210 無法由協議可靠自動區分，請確認設備型號。"
+                    f"{detection.evidence}可信度：{'高' if detection.confidence == Confidence.HIGH else '低'}。請依設備標示確認型號。"
+                    if detection.evidence
+                    else "目前可確認為 PWM 調光器，但 P404／P210 無法由協議可靠自動區分，請確認設備型號。"
                     if detection.family.value == "dimmer"
                     else "請依設備標示確認型號；Unknown 設備不會由 Scanner 自動猜測。"
                 ),
             },
             data_schema=vol.Schema(
                 {
-                    vol.Required("model", default=default.value): select(
+                    model_field: select(
                         [
                             {"value": model.value, "label": MODEL_LABELS[model]}
                             for model in candidates
@@ -596,6 +610,10 @@ class ProfileFlow:
         self._options["devices"] = [
             device.as_dict() for device in self._working_devices
         ]
+        return self._create_gateway_entry()
+
+    def _create_gateway_entry(self) -> ConfigFlowResult:
+        self._async_abort_entries_match(self._gateway)
         return self.async_create_entry(
             title=f"Coselig {self._gateway['host']}",
             data=self._gateway,
@@ -645,10 +663,15 @@ class ConfigFlow(ProfileFlow, config_entries.ConfigFlow, domain=DOMAIN):
                 errors["base"] = "cannot_connect"
             else:
                 self._async_abort_entries_match(self._gateway)
+                await self.async_set_unique_id(self._gateway_unique_id(self._gateway))
                 return await self.async_step_setup_devices()
         return self.async_show_form(
             step_id="user", data_schema=gateway_schema(user_input or {}), errors=errors
         )
+
+    @staticmethod
+    def _gateway_unique_id(gateway: dict[str, Any]) -> str:
+        return f"{gateway['host']}:{gateway['port']}"
 
     async def async_step_reconfigure(
         self, user_input: dict[str, Any] | None = None
@@ -664,8 +687,13 @@ class ConfigFlow(ProfileFlow, config_entries.ConfigFlow, domain=DOMAIN):
                 errors["base"] = "cannot_connect"
             else:
                 self._async_abort_entries_match(gateway)
+                unique_id = self._gateway_unique_id(gateway)
+                await self.async_set_unique_id(unique_id)
                 return self.async_update_reload_and_abort(
-                    entry, data=gateway, title=f"Coselig {gateway['host']}"
+                    entry,
+                    data=gateway,
+                    title=f"Coselig {gateway['host']}",
+                    unique_id=unique_id,
                 )
         return self.async_show_form(
             step_id="reconfigure",
@@ -696,6 +724,10 @@ class CoseligOptionsFlow(ProfileFlow, config_entries.OptionsFlowWithReload):
             "scan_end": DEFAULT_SCAN_END,
             **copy.deepcopy(dict(self.config_entry.options)),
         }
+        self._initial_scan_range = (
+            self._options["scan_start"],
+            self._options["scan_end"],
+        )
         try:
             devices = devices_from_options(self.config_entry.options)
             self._existing = {device.slave: device for device in devices}
@@ -706,7 +738,6 @@ class CoseligOptionsFlow(ProfileFlow, config_entries.OptionsFlowWithReload):
             s402_devices_from_options(dict(self.config_entry.options))
         )
         raw_devices = self.config_entry.options.get("devices", [])
-        self._existing_raw_devices = copy.deepcopy(raw_devices)
         self._existing_raw = {
             int(device["slave"]): copy.deepcopy(device) for device in raw_devices
         }
@@ -837,7 +868,7 @@ class CoseligOptionsFlow(ProfileFlow, config_entries.OptionsFlowWithReload):
             return await self.async_step_manage_devices()
         device = self._existing[self._managed_id]
         if device.model in (Model.P404, Model.P210):
-            action = "output_mode"
+            actions = ["output_mode", "edit_model"]
             description = (
                 ("4 路 PWM 調光器" if device.model == Model.P404 else "2 路 PWM 調光器")
                 if self._is_zh()
@@ -848,11 +879,11 @@ class CoseligOptionsFlow(ProfileFlow, config_entries.OptionsFlowWithReload):
                 )
             )
         else:
-            action = "r410_output_configuration"
+            actions = ["r410_output_configuration"]
             description = "4 路 Relay" if self._is_zh() else "4-channel Relay"
         return self.async_show_menu(
             step_id="device_menu",
-            menu_options=[action, "remove_managed_device", "back_to_device_list"],
+            menu_options=[*actions, "remove_managed_device", "back_to_device_list"],
             description_placeholders={
                 "device": f"{device.model.value.upper()} #{device.slave}",
                 "details": description,
@@ -873,6 +904,42 @@ class CoseligOptionsFlow(ProfileFlow, config_entries.OptionsFlowWithReload):
         self._working_devices = [device]
         self._group_index = 0
         return await self.async_step_groups()
+
+    async def async_step_edit_model(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        if self._managed_kind != "modbus" or self._managed_id not in self._existing:
+            return await self.async_step_manage_devices()
+        device = self._existing[self._managed_id]
+        if device.model not in (Model.P404, Model.P210):
+            return await self.async_step_device_menu()
+        if user_input is not None:
+            model = Model(user_input["model"])
+            self._flow_action = "edit"
+            self._edit_old = device
+            self._selected = [device.slave]
+            self._working_devices = [
+                Device(
+                    device.slave,
+                    model,
+                    device.group_a,
+                    device.group_b if model == Model.P404 else None,
+                )
+            ]
+            return self._show_profile_summary()
+        return self.async_show_form(
+            step_id="edit_model",
+            data_schema=vol.Schema(
+                {
+                    vol.Required("model", default=device.model.value): select(
+                        [
+                            {"value": model.value, "label": MODEL_LABELS[model]}
+                            for model in (Model.P404, Model.P210)
+                        ]
+                    )
+                }
+            ),
+        )
 
     async def async_step_remove_managed_device(
         self, user_input: dict[str, Any] | None = None
@@ -1557,16 +1624,27 @@ class CoseligOptionsFlow(ProfileFlow, config_entries.OptionsFlowWithReload):
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
         updated = self._copy_options()
+        devices = updated.get("devices", [])
+        selected = set(self._remove_selected)
+        if any(
+            self._existing_raw.get(slave)
+            != next((raw for raw in devices if raw["slave"] == slave), None)
+            for slave in selected
+        ):
+            return self.async_abort(reason="options_changed")
         updated["devices"] = [
-            copy.deepcopy(device)
-            for device in self._existing_raw_devices
-            if int(device["slave"]) not in self._remove_selected
+            device for device in devices if device["slave"] not in selected
         ]
         if "r410_covers" in updated:
+            covers = updated["r410_covers"]
+            if [cover for cover in covers if cover["slave"] in selected] != [
+                cover
+                for cover in self._options.get("r410_covers", [])
+                if cover["slave"] in selected
+            ]:
+                return self.async_abort(reason="options_changed")
             updated["r410_covers"] = [
-                copy.deepcopy(cover)
-                for cover in updated["r410_covers"]
-                if int(cover["slave"]) not in self._remove_selected
+                cover for cover in covers if cover["slave"] not in selected
             ]
         return self.async_create_entry(data=updated)
 
@@ -1631,16 +1709,19 @@ class CoseligOptionsFlow(ProfileFlow, config_entries.OptionsFlowWithReload):
 
     def _persist_add(self) -> ConfigFlowResult:
         updated = self._copy_options()
-        existing_slaves = {device.slave for device in self._existing.values()}
-        additions = [
-            device.as_dict()
-            for device in self._working_devices
-            if device.slave not in existing_slaves
-        ]
-        updated["devices"] = [
-            copy.deepcopy(device) for device in self._existing_raw_devices
-        ] + additions
-        if "scan_start" in self._options:
+        devices = updated.get("devices", [])
+        additions = [device.as_dict() for device in self._working_devices]
+        new_slaves = {device["slave"] for device in additions}
+        if new_slaves.intersection(device["slave"] for device in devices) or (
+            1 in new_slaves and s402_devices_from_options(updated)
+        ):
+            return self.async_abort(reason="options_changed")
+        updated["devices"] = devices + additions
+        current_range = (
+            updated.get("scan_start", DEFAULT_SCAN_START),
+            updated.get("scan_end", DEFAULT_SCAN_END),
+        )
+        if "scan_start" in self._options and current_range == self._initial_scan_range:
             updated["scan_start"] = self._options["scan_start"]
             updated["scan_end"] = self._options["scan_end"]
         return self.async_create_entry(data=updated)
@@ -1648,11 +1729,17 @@ class CoseligOptionsFlow(ProfileFlow, config_entries.OptionsFlowWithReload):
     def _persist_edit(self) -> ConfigFlowResult:
         updated = self._copy_options()
         replacement = self._working_devices[0]
+        devices = updated.get("devices", [])
+        current = next(
+            (device for device in devices if device["slave"] == replacement.slave), None
+        )
+        if current is None or current != self._existing_raw.get(replacement.slave):
+            return self.async_abort(reason="options_changed")
         updated["devices"] = [
-            self._serialize_existing(replacement)
-            if int(device["slave"]) == replacement.slave
-            else copy.deepcopy(device)
-            for device in self._existing_raw_devices
+            self._serialize_existing(replacement, current)
+            if device["slave"] == replacement.slave
+            else device
+            for device in devices
         ]
         return self.async_create_entry(data=updated)
 
@@ -1666,9 +1753,10 @@ class CoseligOptionsFlow(ProfileFlow, config_entries.OptionsFlowWithReload):
         ]
         return "\n".join(names) or ("無" if self._is_zh() else "None")
 
-    def _serialize_existing(self, device: Device) -> dict[str, Any]:
+    def _serialize_existing(
+        self, device: Device, raw: dict[str, Any]
+    ) -> dict[str, Any]:
         """Update the selected device while retaining its unknown future fields."""
-        raw = self._existing_raw.get(device.slave, {})
         known_fields = {"slave", "model", "group_a", "group_b"}
         return {
             **{
@@ -1702,6 +1790,7 @@ class CoseligOptionsFlow(ProfileFlow, config_entries.OptionsFlowWithReload):
             step_id="device_menu",
             menu_options=[
                 "output_mode",
+                "edit_model",
                 "remove_managed_device",
                 "back_to_device_list",
             ],

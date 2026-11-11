@@ -3,7 +3,8 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from custom_components.coselig_modbus_hub.scanner import scan
+from custom_components.coselig_modbus_hub.models import Model
+from custom_components.coselig_modbus_hub.scanner import Confidence, scan
 from custom_components.coselig_modbus_hub.transport import GatewayError, Transport
 from tests.dimmer_packets import read
 
@@ -82,7 +83,6 @@ async def test_invalid_range(start, end):
 
 
 async def test_discovery_and_families_custom_range(gateway):
-    from custom_components.coselig_modbus_hub.models import Model
     from custom_components.coselig_modbus_hub.profiles import DeviceFamily
 
     gateway.families.update({51: "dimmer", 52: "relay", 53: "unknown"})
@@ -99,11 +99,13 @@ async def test_discovery_and_families_custom_range(gateway):
             for r in gateway.requests
         ] == [
             (51, 3, 0, 1),
-            (51, 3, 0x082A, 2),
+            (51, 3, 0x082A, 4),
             (52, 3, 0, 1),
+            (52, 3, 0x082A, 4),
             (52, 3, 0x082A, 2),
             (52, 2, 0, 4),
             (53, 3, 0, 1),
+            (53, 3, 0x082A, 4),
             (53, 3, 0x082A, 2),
             (53, 2, 0, 4),
         ]
@@ -122,5 +124,70 @@ async def test_family_probe_failure_retains_discovered_unknown(gateway, mode):
         results = await scan(transport, 80, 80)
         assert len(results) == 1
         assert results[0].family is DeviceFamily.UNKNOWN
+    finally:
+        await transport.close()
+
+
+@pytest.mark.parametrize(
+    ("mode", "confidence", "reason", "counts", "connections"),
+    [
+        ("normal", Confidence.HIGH, "4 個暫存器回覆有效", [4], 1),
+        ("p210_signature", Confidence.HIGH, "兩次重現", [4, 2, 4, 2], 3),
+        ("p210_exception", Confidence.HIGH, "Exception 0x03", [4, 2], 1),
+        ("p210_timeout", Confidence.LOW, "逾時", [4, 2], 2),
+        ("p210_crc", Confidence.LOW, "CRC 錯誤", [4, 2], 2),
+    ],
+)
+async def test_dimmer_model_evidence(
+    gateway, mode, confidence, reason, counts, connections
+):
+    gateway.registers[62] = [0, 0, 0, 0]
+    gateway.modes[62] = mode
+    transport = Transport("127.0.0.1", gateway.port, timeout=0.05)
+    try:
+        (result,) = await scan(transport, 62, 62)
+        assert result.recommended == (Model.P404 if mode == "normal" else Model.P210)
+        assert result.candidates == (Model.P404, Model.P210)
+        assert result.confidence == confidence
+        assert reason in result.evidence
+        assert [int.from_bytes(r[4:6], "big") for r in gateway.requests] == [1, *counts]
+        assert gateway.connections == connections
+        assert transport.statistics.crc_error_count == {
+            "p210_signature": 2,
+            "p210_crc": 1,
+        }.get(mode, 0)
+    finally:
+        await transport.close()
+
+
+async def test_signature_seen_once_does_not_get_high_confidence(gateway):
+    gateway.modes[62] = "p210_signature"
+    transport = Transport("127.0.0.1", gateway.port)
+    try:
+
+        def keep_only_first_bad_frame(direction, raw=b"", **kwargs):
+            if direction == "CRC ERROR":
+                gateway.modes[62] = "normal"
+
+        transport._trace = keep_only_first_bad_frame
+        (result,) = await scan(transport, 62, 62)
+        assert result.recommended == Model.P404
+        assert result.confidence == Confidence.LOW
+    finally:
+        await transport.close()
+
+
+async def test_bad_frame_followed_by_tcp_failure_does_not_recommend_model(gateway):
+    gateway.modes[62] = "p210_signature"
+    transport = Transport("127.0.0.1", gateway.port)
+    try:
+
+        def disconnect_on_fallback(direction, raw=b"", **kwargs):
+            if direction == "CRC ERROR":
+                gateway.modes[62] = "disconnect"
+
+        transport._trace = disconnect_on_fallback
+        with pytest.raises(GatewayError):
+            await scan(transport, 62, 62)
     finally:
         await transport.close()

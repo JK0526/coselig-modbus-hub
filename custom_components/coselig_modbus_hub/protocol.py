@@ -11,7 +11,11 @@ class ProtocolError(ValueError):
 
 
 class CRCError(ProtocolError):
-    """A response with an invalid checksum."""
+    """A response with an invalid checksum, retained for scan evidence only."""
+
+    def __init__(self, response: bytes):
+        self.response = response
+        super().__init__("Invalid CRC")
 
 
 class DeviceException(ProtocolError):
@@ -86,7 +90,7 @@ def validate(request: bytes, response: bytes) -> bytes:
     if len(response) < 5:
         raise ProtocolError("Invalid length")
     if frame(response[:-2]) != response:
-        raise CRCError("Invalid CRC")
+        raise CRCError(response)
     if response[0] != request[0]:
         raise ProtocolError("Wrong slave")
     if response[1] == request[1] | 0x80 and len(response) == 5:

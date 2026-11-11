@@ -7,6 +7,7 @@ from pathlib import Path
 from unittest.mock import AsyncMock, patch
 from uuid import uuid4
 
+import probatio
 import pytest
 from homeassistant.data_entry_flow import FlowResultType
 
@@ -22,8 +23,8 @@ from custom_components.coselig_modbus_hub.hub import Hub
 from custom_components.coselig_modbus_hub.models import Device, GroupMode, Model
 from custom_components.coselig_modbus_hub.profiles import DeviceFamily
 from custom_components.coselig_modbus_hub.r410_cover import R410CoverMode
-from custom_components.coselig_modbus_hub.scanner import ScanResult
-from custom_components.coselig_modbus_hub.transport import GatewayError
+from custom_components.coselig_modbus_hub.scanner import Confidence, ScanResult, scan
+from custom_components.coselig_modbus_hub.transport import GatewayError, Transport
 
 
 def test_model_labels_use_coselig_names_without_legacy_aliases():
@@ -100,7 +101,11 @@ async def _add_p404(options, slave):
     options._found = [slave]
     options._detections = {
         slave: ScanResult(
-            slave, DeviceFamily.DIMMER, (Model.P404, Model.P210), Model.P404
+            slave,
+            DeviceFamily.DIMMER,
+            (Model.P404, Model.P210),
+            Model.P404,
+            confidence=Confidence.HIGH,
         )
     }
     await options.async_step_scan_result()
@@ -156,7 +161,14 @@ async def test_validate_gateway_closes_on_success_and_connection_error(gateway):
 async def test_initial_add_flow_has_summary_before_create_and_p404_default(flow):
     scan_results = [
         ScanResult(63, DeviceFamily.RELAY, (Model.R410,), Model.R410),
-        ScanResult(70, DeviceFamily.DIMMER, (Model.P404, Model.P210), Model.P404),
+        ScanResult(
+            70,
+            DeviceFamily.DIMMER,
+            (Model.P404, Model.P210),
+            Model.P404,
+            "4 個暫存器回覆有效",
+            Confidence.HIGH,
+        ),
     ]
     with (
         patch(
@@ -188,10 +200,7 @@ async def test_initial_add_flow_has_summary_before_create_and_p404_default(flow)
         labels = [item["label"] for item in _choices(result, "model")]
         assert "P404 — 4 路 PWM 調光器" in labels
         assert "P210 — 2 路 PWM 調光器" in labels
-        assert (
-            "P404／P210 無法由協議可靠自動區分"
-            in result["description_placeholders"]["model_reason"]
-        )
+        assert "可信度：高" in result["description_placeholders"]["model_reason"]
         result = await flow.async_step_model({"model": "p404"})
         assert result["step_id"] == "groups"
         result = await flow.async_step_groups({"group_a": "single", "group_b": "cct"})
@@ -574,7 +583,7 @@ async def test_model_flow_recommendations_and_single_r410_skip(
     if expect_model:
         assert result["step_id"] == "model"
         default = recommended or Model.P404
-        assert result["data_schema"]({})["model"] == default.value
+        assert list(result["data_schema"].schema)[0].default is probatio.UNDEFINED
         assert [item["value"] for item in _choices(result, "model")] == [
             model.value for model in candidates
         ]
@@ -764,6 +773,7 @@ async def test_unified_device_selector_routes_each_device_to_its_capabilities(
     }
     assert p404["menu_options"] == [
         "output_mode",
+        "edit_model",
         "remove_managed_device",
         "back_to_device_list",
     ]
@@ -954,6 +964,7 @@ async def test_reconfigure_flow_remains_available_for_gateway_host_and_port(
         entry,
         data={"host": "new-gateway.local", "port": 1502},
         title="Coselig new-gateway.local",
+        unique_id="new-gateway.local:1502",
     )
 
 
@@ -988,6 +999,7 @@ async def test_edit_one_device_preserves_unchanged_groups_and_summary(
     await _select_modbus(options, 1)
     assert (await options.async_step_device_menu())["menu_options"] == [
         "output_mode",
+        "edit_model",
         "remove_managed_device",
         "back_to_device_list",
     ]
@@ -2029,3 +2041,187 @@ async def test_edit_missing_cover_and_remove_confirmation_guards(options, entry,
     result = await options.async_step_confirm_cover()
     assert result["step_id"] == "r410_output_configuration"
     assert entry.options["r410_covers"] == [cover, second]
+
+
+@pytest.mark.parametrize("model", [Model.P210, Model.P404])
+async def test_model_form_displays_probe_evidence_and_keeps_manual_choice(flow, model):
+    flow._found = [62]
+    flow._detections = {
+        62: ScanResult(
+            62,
+            DeviceFamily.DIMMER,
+            (Model.P404, Model.P210),
+            model,
+            "FC03 0x082A：實際回覆有效。",
+            Confidence.HIGH,
+        )
+    }
+    result = await flow.async_step_scan_result({"devices": ["62"]})
+    assert result["description_placeholders"]["recommended"] == model.value.upper()
+    assert "FC03 0x082A" in result["description_placeholders"]["model_reason"]
+    assert "可信度：高" in result["description_placeholders"]["model_reason"]
+    assert result["data_schema"]({})["model"] == model.value
+    assert {choice["value"] for choice in _choices(result, "model")} == {"p210", "p404"}
+
+
+async def test_single_crc_recommends_p210_without_preselecting(flow, gateway):
+    gateway.modes[62] = "p210_crc"
+    transport = Transport("127.0.0.1", gateway.port)
+    try:
+        (detection,) = await scan(transport, 62, 62)
+    finally:
+        await transport.close()
+    assert detection.recommended == Model.P210
+    assert detection.confidence == Confidence.LOW
+    flow._found = [62]
+    flow._detections = {62: detection}
+    result = await flow.async_step_scan_result({"devices": ["62"]})
+    assert "可信度：低" in result["description_placeholders"]["model_reason"]
+    assert list(result["data_schema"].schema)[0].default is probatio.UNDEFINED
+    for model in (Model.P210, Model.P404):
+        assert result["data_schema"]({"model": model.value}) == {"model": model.value}
+
+
+async def test_same_gateway_cannot_start_two_active_config_flows(hass):
+    gateway = {"host": "unique-gateway.local", "port": 1502}
+    with patch(
+        "custom_components.coselig_modbus_hub.config_flow.validate_gateway",
+        new=AsyncMock(return_value=gateway),
+    ):
+        first = await hass.config_entries.flow.async_init(
+            DOMAIN, context={"source": "user"}
+        )
+        second = await hass.config_entries.flow.async_init(
+            DOMAIN, context={"source": "user"}
+        )
+        started = await hass.config_entries.flow.async_configure(
+            first["flow_id"], gateway
+        )
+        duplicate = await hass.config_entries.flow.async_configure(
+            second["flow_id"], gateway
+        )
+    assert started["step_id"] == "setup_devices"
+    assert duplicate["reason"] == "already_in_progress"
+    hass.config_entries.flow.async_abort(first["flow_id"])
+
+
+@pytest.mark.parametrize("s402", [False, True])
+async def test_gateway_created_while_form_open_is_rechecked_on_confirm(
+    flow, entry, s402
+):
+    flow._gateway = dict(entry.data)
+    flow._working_devices = [Device(3, Model.P210)]
+    flow._s402_pending_id = 7
+    from homeassistant.data_entry_flow import AbortFlow
+
+    with pytest.raises(AbortFlow, match="already_configured"):
+        if s402:
+            await flow.async_step_confirm_s402()
+        else:
+            await flow.async_step_confirm_add()
+
+
+@pytest.mark.parametrize("operation", ["add", "edit", "remove"])
+async def test_options_confirmation_preserves_unrelated_concurrent_device(
+    options, entry, hass, operation
+):
+    await _options_ready(options)
+    current = [*entry.options["devices"], {"slave": 55, "model": "p210"}]
+    hass.config_entries.async_update_entry(
+        entry, options={**entry.options, "devices": current}
+    )
+    if operation == "add":
+        options._working_devices = [Device(56, Model.P210)]
+        result = options._persist_add()
+    elif operation == "edit":
+        options._working_devices = [Device(1, Model.P210)]
+        result = options._persist_edit()
+    else:
+        options._remove_selected = [1]
+        result = await options.async_step_confirm_remove()
+    assert result["type"] == FlowResultType.CREATE_ENTRY
+    assert current[-1] in result["data"]["devices"]
+
+
+@pytest.mark.parametrize("operation", ["add", "edit", "remove", "s402"])
+async def test_options_conflicting_concurrent_device_change_aborts(
+    options, entry, hass, operation
+):
+    await _options_ready(options)
+    changed = {**entry.options, "devices": [{"slave": 1, "model": "p210"}]}
+    hass.config_entries.async_update_entry(entry, options=changed)
+    options._working_devices = [Device(1, Model.P404)]
+    options._remove_selected = [1]
+    options._s402_pending_id = 7
+    if operation == "add":
+        result = options._persist_add()
+    elif operation == "edit":
+        result = options._persist_edit()
+    elif operation == "remove":
+        result = await options.async_step_confirm_remove()
+    else:
+        result = await options.async_step_confirm_s402()
+    assert result["reason"] == "options_changed"
+    assert entry.options == changed
+
+
+@pytest.mark.parametrize(
+    "old,new", [(Model.P404, Model.P210), (Model.P210, Model.P404)]
+)
+async def test_installed_dimmer_model_edit_preserves_group_a(
+    options, entry, hass, old, new
+):
+    hass.config_entries.async_update_entry(
+        entry,
+        options={**entry.options, "devices": [Device(1, old, GroupMode.CCT).as_dict()]},
+    )
+    await _options_ready(options)
+    await _select_modbus(options, 1)
+    form = await options.async_step_edit_model()
+    assert form["data_schema"]({})["model"] == old.value
+    summary = await options.async_step_edit_model({"model": new.value})
+    assert summary["step_id"] == "edit_summary"
+    assert entry.options["devices"][0]["model"] == old.value
+    confirmed = await options.async_step_confirm_edit()
+    assert confirmed["data"]["devices"] == [Device(1, new, GroupMode.CCT).as_dict()]
+    options._managed_id = 99
+    assert (await options.async_step_edit_model())["step_id"] == "manage_devices"
+
+
+async def test_model_edit_rejects_r410_route(options, entry, hass):
+    hass.config_entries.async_update_entry(
+        entry, options={**entry.options, "devices": [{"slave": 63, "model": "r410"}]}
+    )
+    await _options_ready(options)
+    await _select_modbus(options, 63)
+    assert (await options.async_step_edit_model())["step_id"] == "device_menu"
+
+
+async def test_remove_r410_rejects_new_cover_added_after_confirmation_opened(
+    options, entry, hass
+):
+    hass.config_entries.async_update_entry(
+        entry, options={**entry.options, "devices": [{"slave": 63, "model": "r410"}]}
+    )
+    await _options_ready(options)
+    await _select_modbus(options, 63)
+    await options.async_step_remove_managed_device()
+    cover = _cover_options()
+    hass.config_entries.async_update_entry(
+        entry, options={**entry.options, "r410_covers": [cover]}
+    )
+    result = await options.async_step_confirm_remove()
+    assert result["reason"] == "options_changed"
+    assert entry.options["r410_covers"] == [cover]
+
+
+async def test_add_device_preserves_newer_scan_range(options, entry, hass):
+    await _options_ready(options)
+    options._options.update(scan_start=50, scan_end=60)
+    hass.config_entries.async_update_entry(
+        entry, options={**entry.options, "scan_start": 70, "scan_end": 80}
+    )
+    options._working_devices = [Device(55, Model.P210)]
+    result = options._persist_add()
+    assert (result["data"]["scan_start"], result["data"]["scan_end"]) == (70, 80)
+    assert result["data"]["devices"][-1] == Device(55, Model.P210).as_dict()

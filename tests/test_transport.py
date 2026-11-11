@@ -1163,3 +1163,61 @@ async def test_cancelled_active_request_does_not_rewrite_its_completed_future(
         await asyncio.sleep(0.001)
     assert transport.statistics.failed_requests == 1
     await transport.close()
+
+
+async def test_stream_reset_shares_reconnect_deadline_for_concurrent_callers(
+    gateway, transport, monkeypatch
+):
+    await transport.connect()
+    first_reader = transport._reader_task
+    gateway.modes[62] = "p210_signature"
+    with pytest.raises(CRCError):
+        await transport.submit(read(62, 4), poll=True)
+    assert not transport.connected
+    assert first_reader.done()
+    deadline = transport._reconnect_at
+    open_connection = asyncio.open_connection
+    opened_at = []
+
+    async def observe_connection(*args, **kwargs):
+        opened_at.append(asyncio.get_running_loop().time())
+        return await open_connection(*args, **kwargs)
+
+    monkeypatch.setattr(asyncio, "open_connection", observe_connection)
+    gateway.modes.clear()
+    await asyncio.gather(
+        transport.submit(read(62, 2), poll=True),
+        transport.connect(),
+        transport.connect(),
+    )
+    assert len(opened_at) == 1
+    assert opened_at[0] >= deadline
+    assert gateway.connections == 2
+    assert transport.statistics.reconnect_count == 1
+    assert len(gateway.writers) == 1
+    assert transport._reader_task is not first_reader
+
+
+async def test_close_cancels_active_future_during_error_cleanup(
+    gateway, transport, monkeypatch
+):
+    entered_cleanup = asyncio.Event()
+    disconnect = transport._disconnect
+
+    async def hold_first_cleanup():
+        if not entered_cleanup.is_set():
+            entered_cleanup.set()
+            await asyncio.Future()
+        await disconnect()
+
+    monkeypatch.setattr(transport, "_disconnect", hold_first_cleanup)
+    gateway.modes[62] = "p210_signature"
+    active = asyncio.create_task(transport.submit(read(62, 4), poll=True))
+    async with asyncio.timeout(2):
+        await entered_cleanup.wait()
+        await transport.close()
+        with pytest.raises(asyncio.CancelledError):
+            await active
+    assert transport._worker is None
+    assert transport._reader_task is None
+    assert not transport.connected

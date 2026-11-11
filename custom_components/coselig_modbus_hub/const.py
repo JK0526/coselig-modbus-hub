@@ -1,7 +1,7 @@
 """Fixed protocol defaults; only user-facing settings are persisted."""
 
 DOMAIN = "coselig_modbus_hub"
-VERSION = "1.6.4"
+VERSION = "1.6.5-beta.1"
 DEFAULT_PORT = 502
 DEFAULT_TIMEOUT = 0.5
 DEFAULT_POLL_INTERVAL = 2.0
@@ -14,3 +14,5 @@ MINIMUM_BRIGHTNESS = 2
 MIRED_MIN = 175
 MIRED_MAX = 455
 BACKOFF = (1, 2, 4, 8, 15, 30)
+TCP_RECONNECT_DELAY = 0.1
+SLAVE_POLL_BACKOFF = (30, 60, 120, 240, 300)

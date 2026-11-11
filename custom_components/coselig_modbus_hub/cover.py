@@ -73,7 +73,7 @@ class CoseligR410Cover(CoordinatorEntity[Coordinator], CoverEntity):
         self.async_write_ha_state()
 
     async def _action(self, action: str) -> None:
-        if not self.available or self.coordinator.scanning:
+        if not self.coordinator.can_control(self.config.slave):
             raise HomeAssistantError("Coselig R410 unavailable or scanning")
         try:
             await self.coordinator.async_action_command(

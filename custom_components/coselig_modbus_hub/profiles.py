@@ -194,7 +194,6 @@ PROFILES = {
 # Common identity-register discovery and read-only family capabilities.  Kept here
 # with all other product register knowledge; Scanner only orchestrates probes.
 DISCOVERY = PollSpec(3, 0, 1)
-FAMILY_PROBES = (
-    (PollSpec(3, REGISTER_BASE, 2), DeviceFamily.DIMMER, (Model.P404, Model.P210)),
-    (PollSpec(2, 0, 4), DeviceFamily.RELAY, (Model.R410,)),
-)
+DIMMER_WIDE_PROBE = PROFILES[Model.P404].poll
+DIMMER_NARROW_PROBE = PROFILES[Model.P210].poll
+RELAY_PROBE = PollSpec(2, 0, 4)

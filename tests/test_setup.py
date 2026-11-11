@@ -3,7 +3,12 @@ from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 from homeassistant.const import EVENT_HOMEASSISTANT_STOP
-from homeassistant.exceptions import ConfigEntryError, ConfigEntryNotReady
+from homeassistant.data_entry_flow import FlowResultType
+from homeassistant.exceptions import (
+    ConfigEntryError,
+    ConfigEntryNotReady,
+    HomeAssistantError,
+)
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
 from pytest_homeassistant_custom_component.common import MockConfigEntry
@@ -332,11 +337,12 @@ async def test_initial_slave_timeout_loads_and_recovers_with_poll_disabled(
     gateway.modes[1] = "timeout"
     try:
         await hub.start()
-        assert not hub.coordinator.gateway_available
+        assert hub.coordinator.gateway_available
+        assert not hub.transport.connected
         assert not hub.coordinator.gateway_failed
         assert hub.coordinator.states[1].consecutive_failures == 1
         async with asyncio.timeout(3):
-            while not hub.coordinator.gateway_available:
+            while gateway.connections < 2 or not hub.transport.connected:
                 await asyncio.sleep(0.001)
         assert hub.transport.connected
         assert gateway.connections == 2
@@ -607,4 +613,163 @@ async def test_shutdown_closes_socket_and_tasks(hass, entry, gateway):
     assert hub.coordinator._task is None
     assert hub.transport._worker is None
     assert not hub.transport.connected
+    assert await hass.config_entries.async_unload(entry.entry_id)
+
+
+async def test_crc_reset_keeps_healthy_ha_entities_available_and_blocks_writes(
+    hass, entry, gateway, monkeypatch
+):
+    healthy = tuple(range(10, 28))
+    hass.config_entries.async_update_entry(
+        entry,
+        data={"host": "127.0.0.1", "port": gateway.port},
+        options={
+            **entry.options,
+            "poll_interval": 0,
+            "devices": [
+                Device(slave, Model.P404).as_dict() for slave in (62, *healthy)
+            ],
+        },
+    )
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+    hub = entry.runtime_data
+    healthy_entities = {
+        entity.entity_id
+        for entity in er.async_entries_for_config_entry(
+            er.async_get(hass), entry.entry_id
+        )
+        if any(entity.unique_id.endswith(f"_slave_{slave}_ch1") for slave in healthy)
+    }
+    assert len(healthy_entities) == 18
+    connect = hub.transport.connect
+    reconnecting = asyncio.Event()
+    release = asyncio.Event()
+
+    async def pause_reconnect():
+        if not hub.transport.connected:
+            reconnecting.set()
+            await release.wait()
+        await connect()
+
+    monkeypatch.setattr(hub.transport, "connect", pause_reconnect)
+    gateway.modes[62] = "p210_signature"
+    task = asyncio.create_task(hub.coordinator.async_poll_round())
+    try:
+        async with asyncio.timeout(2):
+            await reconnecting.wait()
+        assert hub.coordinator.gateway_available
+        assert not hub.transport.connected
+        assert all(
+            hass.states.get(entity).state != "unavailable"
+            for entity in healthy_entities
+        )
+        entity = min(healthy_entities)
+        before = hass.states.get(entity).state
+        with pytest.raises(HomeAssistantError, match="unavailable or scanning"):
+            await hass.services.async_call(
+                "light", "turn_off", {"entity_id": entity}, blocking=True
+            )
+        assert hass.states.get(entity).state == before
+        assert not gateway.register_writes
+    finally:
+        release.set()
+        await task
+
+    await hass.services.async_call(
+        "light", "turn_off", {"entity_id": entity}, blocking=True
+    )
+    assert len(gateway.register_writes) == 1
+    assert len(gateway.writers) == 1
+    assert await hass.config_entries.async_unload(entry.entry_id)
+
+
+async def test_native_model_edit_reloads_without_losing_group_a_identity(
+    hass, entry, gateway
+):
+    hass.config_entries.async_update_entry(
+        entry,
+        data={"host": "127.0.0.1", "port": gateway.port},
+        options={
+            **entry.options,
+            "poll_interval": 0,
+            "devices": [Device(62, Model.P404).as_dict()],
+        },
+    )
+    gateway.modes[62] = "p210_signature"
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+    original = entry.runtime_data
+    for _ in range(2):
+        await original.coordinator.async_poll_round()
+    assert original.coordinator.states[62].next_probe_at > 0
+    entities = er.async_get(hass)
+    devices = dr.async_get(hass)
+    before = {
+        entity.unique_id: entity
+        for entity in er.async_entries_for_config_entry(entities, entry.entry_id)
+    }
+    assert len(before) == 4
+    ch1 = before[f"{entry.entry_id}_slave_62_ch1"]
+    entities.async_update_entity(ch1.entity_id, name="Keep this name")
+    parent = devices.async_get_device_by_identifier(
+        (DOMAIN, f"{entry.entry_id}_slave_62"), entry.entry_id
+    )
+    manager = hass.config_entries.options
+    result = await manager.async_init(entry.entry_id)
+    flow_id = result["flow_id"]
+    for step in ("device_management", "manage_devices"):
+        result = await manager.async_configure(flow_id, {"next_step_id": step})
+    result = await manager.async_configure(flow_id, {"device": "modbus:62"})
+    result = await manager.async_configure(flow_id, {"next_step_id": "edit_model"})
+    result = await manager.async_configure(flow_id, {"model": "p210"})
+    assert result["step_id"] == "edit_summary"
+    result = await manager.async_configure(flow_id, {"next_step_id": "confirm_edit"})
+    assert result["type"] == FlowResultType.CREATE_ENTRY
+    await hass.async_block_till_done()
+    assert entry.runtime_data is not original
+    assert entry.runtime_data.coordinator.devices[0].model == Model.P210
+    state = entry.runtime_data.coordinator.states[62]
+    assert state.available and state.next_probe_at == state.consecutive_failures == 0
+    assert gateway.requests[-1][4:6] == b"\x00\x02"
+    after = {
+        entity.unique_id: entity
+        for entity in er.async_entries_for_config_entry(entities, entry.entry_id)
+    }
+    assert set(after) == {
+        f"{entry.entry_id}_slave_62_ch{channel}" for channel in (1, 2)
+    }
+    assert after[ch1.unique_id].entity_id == ch1.entity_id
+    assert after[ch1.unique_id].device_id == ch1.device_id
+    assert after[ch1.unique_id].name == "Keep this name"
+    assert devices.async_get(parent.id).model == "P210"
+    assert await hass.config_entries.async_unload(entry.entry_id)
+
+
+async def test_cold_start_resumes_after_first_slave_drops_tcp(
+    hass, entry, gateway, monkeypatch
+):
+    hass.config_entries.async_update_entry(
+        entry,
+        data={"host": "127.0.0.1", "port": gateway.port},
+        options={
+            **entry.options,
+            "poll_interval": 0.5,
+            "devices": [Device(slave, Model.P404).as_dict() for slave in (1, 2)],
+        },
+    )
+    from custom_components.coselig_modbus_hub.coordinator import Coordinator
+
+    monkeypatch.setattr(Coordinator, "next_backoff", lambda self: 0)
+    gateway.modes[1] = "disconnect"
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    coordinator = entry.runtime_data.coordinator
+    assert coordinator.gateway_failed
+    async with asyncio.timeout(4):
+        while not (
+            coordinator.states[1].next_probe_at and coordinator.states[2].available
+        ):
+            await asyncio.sleep(0.001)
+    assert [request[0] for request in gateway.requests[:6]] == [1, 2, 1, 2, 1, 2]
+    assert coordinator.gateway_available and not coordinator.states[1].available
     assert await hass.config_entries.async_unload(entry.entry_id)

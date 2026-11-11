@@ -88,6 +88,20 @@ class Gateway:
                 elif function == 3 and address == 0 and family != "absent":
                     # Stored Modbus ID need not equal the DIP-selected wire slave.
                     response = frame(bytes([request[0], 3, 2, 0, 99]))
+                elif (
+                    function == 3
+                    and address == 0x082A
+                    and mode
+                    in {"p210_signature", "p210_exception", "p210_timeout", "p210_crc"}
+                    and request[4:6] == b"\x00\x04"
+                ):
+                    if mode == "p210_timeout":
+                        continue
+                    response = frame(bytes([request[0], 0x83, 3]))
+                    if mode == "p210_signature":
+                        response = bytes([request[0], 0x83, 3, 0, 0x3D])
+                    elif mode == "p210_crc":
+                        response = response[:-1] + bytes([response[-1] ^ 1])
                 elif (function == 3 and address == 0x082A and family != "dimmer") or (
                     function == 2 and family != "relay"
                 ):

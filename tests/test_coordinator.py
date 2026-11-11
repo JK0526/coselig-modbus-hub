@@ -80,7 +80,7 @@ async def test_all_failed_round_rebuilds(gateway, coordinator):
     gateway.modes.update({1: "timeout", 2: "timeout"})
     await coordinator.async_poll_round()
     assert not coordinator.transport.connected
-    assert not coordinator.gateway_available
+    assert coordinator.gateway_available
     assert coordinator.states[1].available
     gateway.modes.clear()
     await coordinator.async_poll_round()
@@ -298,9 +298,9 @@ async def test_scan_pauses_round_and_controls(gateway, coordinator):
     await poll
     assert [int.from_bytes(r[4:6], "big") for r in gateway.requests] == [
         1,
-        2,
+        4,
         1,
-        2,
+        4,
         4,
         2,
     ]
@@ -408,28 +408,110 @@ async def test_idle_scheduler_recovers_tcp_without_polling(
     assert gateway.requests == [*expected, request]
 
 
-async def test_repeated_poll_disconnect_backs_off_until_a_slave_replies(
+async def test_poll_disconnect_rotates_and_quarantines_offending_slave(
     gateway, coordinator, monkeypatch
 ):
     await coordinator.async_poll_round()
+    gateway.requests.clear()
     gateway.modes[1] = "disconnect"
+    coordinator.set_poll_interval(0.5)
     delays = []
     next_backoff = coordinator.next_backoff
 
     def record_backoff():
         delays.append(next_backoff())
-        if len(delays) == 3:
-            gateway.modes.clear()
         return 0
 
     monkeypatch.setattr(coordinator, "next_backoff", record_backoff)
     coordinator.start()
-    async with asyncio.timeout(2):
-        while len(delays) < 3 or not all(
-            state.available for state in coordinator.states.values()
+    async with asyncio.timeout(4):
+        while not (
+            coordinator.states[1].next_probe_at and coordinator.states[2].available
         ):
             await asyncio.sleep(0.001)
-    assert delays == [1, 2, 4]
-    assert next_backoff() == 1
+    assert delays == [1, 1, 1]
+    assert [request[0] for request in gateway.requests[:6]] == [1, 2, 1, 2, 1, 2]
+    assert not coordinator.states[1].available
+    assert coordinator.gateway_available
     assert gateway.connections == 4
     assert len(gateway.writers) == 1
+
+
+@pytest.mark.parametrize(
+    ("mode", "reconnects"), [("p210_signature", 3), ("p210_exception", 0)]
+)
+async def test_misconfigured_slave_isolated_from_other_18(
+    hass, gateway, mode, reconnects
+):
+    healthy = tuple(range(10, 28))
+    devices = (
+        Device(62, Model.P404),
+        *(Device(slave, Model.P404) for slave in healthy),
+    )
+    hub = Hub.create(hass, "127.0.0.1", gateway.port, devices, 2)
+    coordinator, transport = hub.coordinator, hub.transport
+    try:
+        await coordinator.async_poll_round(background=True)
+        worker = transport._worker
+        gateway.modes[62] = mode
+        for _ in range(3):
+            await coordinator.async_poll_round(background=True)
+        assert transport.statistics.reconnect_count == reconnects
+        assert transport.statistics.crc_error_count == reconnects
+        state = coordinator.states[62]
+        assert state.consecutive_failures == 3
+        assert not state.available
+        assert all(coordinator.states[slave].available for slave in healthy)
+        assert coordinator.devices[0].model == Model.P404
+        for delay in (30, 60, 120, 240, 300, 300):
+            assert (
+                state.next_probe_at - asyncio.get_running_loop().time()
+                == pytest.approx(delay, abs=1)
+            )
+            if delay != 30:
+                assert state.consecutive_failures >= 4
+            before = len(gateway.requests)
+            await coordinator.async_poll_round(background=True)
+            assert [r[0] for r in gateway.requests[before:]] == list(healthy)
+            if state.consecutive_failures == 8:
+                break
+            state.next_probe_at = asyncio.get_running_loop().time() - 1
+            await coordinator.async_poll_round(background=True)
+
+        gateway.modes.clear()
+        state.next_probe_at = asyncio.get_running_loop().time() - 1
+        await coordinator.async_poll_round(background=True)
+        assert state.available and state.consecutive_failures == 0
+        assert state.next_probe_at == 0
+        request = write(10, 0x082A, 72)
+        await coordinator.async_command(10, request, (10, "ch1", "brightness"))
+        assert gateway.requests.count(request) == 1
+        assert transport._worker is worker
+        assert sum(t.get_name() == "coselig-rx" for t in asyncio.all_tasks()) == 1
+        assert len(gateway.writers) == 1
+    finally:
+        await hub.stop()
+    assert transport._worker is None and transport._reader_task is None
+
+
+async def test_soft_reset_escalates_to_offline_if_tcp_cannot_reconnect(
+    coordinator, gateway, monkeypatch
+):
+    await coordinator.async_poll_round()
+    coordinator.set_poll_interval(0)
+    coordinator.start()
+    request = write(1, 0x082A, 72)
+    gateway.modes[1] = "timeout"
+
+    new_connect = AsyncMock(side_effect=OSError("refused"))
+    monkeypatch.setattr(asyncio, "open_connection", new_connect)
+    with pytest.raises(TimeoutError):
+        await coordinator.async_command(1, request, (1, "ch1", "brightness"))
+    async with asyncio.timeout(2):
+        while coordinator.gateway_available:
+            await asyncio.sleep(0.001)
+    new_connect.assert_awaited_once()
+    assert coordinator.gateway_failed
+    assert not any(state.available for state in coordinator.states.values())
+    assert all(state.consecutive_failures == 0 for state in coordinator.states.values())
+    assert gateway.requests.count(request) == 1

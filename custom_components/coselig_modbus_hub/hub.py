@@ -13,7 +13,7 @@ from .r410_cover import R410CoverConfig
 from .s402 import S402Event
 from .scanner import ScanResult, scan
 from .trace import ProtocolTraceBuffer
-from .transport import GatewayError, Transport
+from .transport import GatewayError, GatewayExchangeError, Transport
 
 
 @dataclass
@@ -78,8 +78,14 @@ class Hub:
 
     async def start(self) -> None:
         await self.transport.connect()
-        await self.coordinator.async_poll_round()
-        if self.coordinator.gateway_failed:
+        error = await self.coordinator.async_poll_round()
+        # Keep the cursor and failure counts if a slave interrupted a multi-device
+        # bootstrap. Retrying the entire HA entry would always start at slave one.
+        can_resume = (
+            isinstance(error, GatewayExchangeError)
+            and len(self.coordinator.devices) > 1
+        )
+        if self.coordinator.gateway_failed and not can_resume:
             raise ConnectionError("Gateway lost during initial poll")
         self.coordinator.start()
 

@@ -174,7 +174,7 @@ async def test_failed_open_close_and_stop_preserve_last_successful_state(
 
     async def wait_for_reconnect():
         async with asyncio.timeout(2):
-            while not cover.available:
+            while not coordinator.transport.connected:
                 await asyncio.sleep(0.001)
 
     await cover.async_close_cover()

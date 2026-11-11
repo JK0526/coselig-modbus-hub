@@ -53,7 +53,8 @@
       "add_device": {"title": "新增裝置", "menu_options": {"search_modbus": "搜尋 Modbus 裝置", "add_s402": "新增 S402 場景輸入", "back_to_device_management": "返回上一層"}},
       "manage_devices": {"title": "選擇裝置", "description": "選擇要管理的裝置。", "data": {"device": "裝置"}, "menu_options": {"back_to_device_management": "返回上一層"}},
       "manage_devices_empty": {"title": "已安裝裝置", "description": "尚未設定任何裝置。", "menu_options": {"back_to_device_management": "返回上一層"}},
-      "device_menu": {"title": "裝置管理", "description": "{device}\n{details}", "menu_options": {"output_mode": "輸出模式", "r410_output_configuration": "輸出配置", "remove_managed_device": "移除裝置", "back_to_device_list": "返回上一層"}},
+      "edit_model": {"title": "修正裝置型號", "description": "A 組設定會保留。P404 改成 P210 時會移除 B 組實體，請先檢查引用這些實體的自動化。", "data": {"model": "裝置型號"}},
+      "device_menu": {"title": "裝置管理", "description": "{device}\n{details}", "menu_options": {"edit_model": "修正型號", "output_mode": "輸出模式", "r410_output_configuration": "輸出配置", "remove_managed_device": "移除裝置", "back_to_device_list": "返回上一層"}},
       "s402_device_management": {"title": "S402 裝置", "description": "{device}\n{details}", "menu_options": {"remove_managed_s402": "移除裝置", "back_to_device_list": "返回上一層"}},
       "communication_scan_range": {"title": "掃描範圍", "description": "設定下一次 Modbus 搜尋使用的 Slave 範圍；儲存範圍不會開始搜尋。", "data": {"scan_start": "起始 Slave ID", "scan_end": "結束 Slave ID"}, "submit": "儲存"},
       "r410_output_configuration": {"title": "輸出配置", "description": "{allocations}\n\n{reason}", "menu_options": {"add_r410_cover": "新增 Cover", "back_to_device_menu": "返回上一層", "manage_r410_covers": "管理 Cover"}},
@@ -61,6 +62,6 @@
     },
     "error": {"invalid_range": "起始 Slave 不可大於結束 Slave。", "invalid_poll_interval": "輪詢週期必須是 0 或至少 0.5 秒。", "no_devices": "請至少選擇一台新裝置。", "no_devices_to_remove": "請至少選擇一台要移除的裝置。", "invalid_s402_id": "S402 ID 必須介於 0～255。", "duplicate_s402_id": "此 S402 ID 已設定。", "reserved_slave_one": "S402 4x 模式會保留 Modbus Slave #1；新增 S402 前請先移除或變更 Slave #1，新增 Slave #1 前請先移除 S402。", "no_s402_to_remove": "請至少選擇一台要移除的 S402。", "cover_r410_unavailable": "請選擇至少有 2 個未配置 Relay 的 R410。", "invalid_cover_name": "請輸入非空白的 Cover 名稱。", "invalid_cover_device_class": "請選擇有效的 Home Assistant Cover 裝置類別，或留白。", "invalid_cover_mode": "請選擇有效的兩路或三路模式。", "insufficient_cover_relays": "至少需要 2 個未使用 Relay；三路模式需要 3 個。", "invalid_cover_relays": "請為此 Cover 選擇互不重複且未被占用的 Relay。", "invalid_cover_pulse": "脈衝需為 0.1～25.0 秒，並以 0.1 秒遞增。", "cover_not_found": "找不到此 Cover。請返回 Cover 管理後重試。", "device_not_found": "找不到所選裝置，請重新選擇。"},
     "progress": {"scan": "正在掃描 {current}/{total}；找到 {found} 個裝置。"},
-    "abort": {"invalid_stored_options": "已儲存的裝置或 R410 Cover 設定無效，請先修正設定。"}
+    "abort": {"options_changed": "設定已在其他流程變更。請重新開啟選項。", "invalid_stored_options": "已儲存的裝置或 R410 Cover 設定無效，請先修正設定。"}
   }
 }

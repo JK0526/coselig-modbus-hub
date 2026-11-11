@@ -138,7 +138,7 @@ class CoseligLight(CoordinatorEntity[Coordinator], LightEntity):
             ) from error
 
     async def async_turn_on(self, **kwargs: Any) -> None:
-        if not self.available or self.coordinator.scanning:
+        if not self.coordinator.can_control(self.device.slave):
             raise HomeAssistantError("Coselig device unavailable or scanning")
         brightness = kwargs.get(ATTR_BRIGHTNESS, self._last_brightness)
         raw = brightness_to_raw(brightness)
@@ -176,7 +176,7 @@ class CoseligLight(CoordinatorEntity[Coordinator], LightEntity):
                 raise result
 
     async def async_turn_off(self, **kwargs: Any) -> None:
-        if not self.available or self.coordinator.scanning:
+        if not self.coordinator.can_control(self.device.slave):
             raise HomeAssistantError("Coselig device unavailable or scanning")
         self._optimistic_at = asyncio.get_running_loop().time()
         self._attr_is_on = False

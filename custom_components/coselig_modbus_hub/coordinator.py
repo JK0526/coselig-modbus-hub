@@ -13,11 +13,17 @@ from dataclasses import dataclass
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 
-from .const import BACKOFF, DOMAIN
+from .const import BACKOFF, DOMAIN, SLAVE_POLL_BACKOFF
 from .models import Device
 from .profiles import ModbusData
 from .protocol import ProtocolError
-from .transport import CommandKey, GatewayError, OfflineError, Transport
+from .transport import (
+    CommandKey,
+    GatewayError,
+    GatewayExchangeError,
+    OfflineError,
+    Transport,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -31,6 +37,7 @@ class DeviceState(ModbusData):
     available: bool = False
     consecutive_failures: int = 0
     poll_started: float = 0
+    next_probe_at: float = 0
 
 
 class Coordinator(DataUpdateCoordinator[dict[int, DeviceState]]):
@@ -54,6 +61,8 @@ class Coordinator(DataUpdateCoordinator[dict[int, DeviceState]]):
         self.states = {device.slave: DeviceState() for device in devices}
         self.gateway_available = True
         self.gateway_failed = False
+        self._stream_reset_pending = False
+        self._next_slave_index = 0
         self.scanning = False
         self._runtime_poll_paused = False
         self._round_lock = asyncio.Lock()
@@ -127,13 +136,13 @@ class Coordinator(DataUpdateCoordinator[dict[int, DeviceState]]):
 
     def stream_reset(self) -> None:
         """Schedule TCP recovery without changing per-slave health."""
-        self.gateway_available = False
+        self._stream_reset_pending = True
         # A round already in progress will check the connection when it ends.
         if self._waiting_for_schedule:
             self._schedule_wake.set()
-        self.async_set_updated_data(self.states)
 
     def gateway_restored(self) -> None:
+        self._stream_reset_pending = False
         if self.gateway_available:
             return
         self.gateway_available = True
@@ -151,6 +160,7 @@ class Coordinator(DataUpdateCoordinator[dict[int, DeviceState]]):
             _LOGGER.warning("Gateway lost")
         self.gateway_available = False
         self.gateway_failed = True
+        self._stream_reset_pending = False
         self._schedule_wake.set()
         self.transport.discard_controls()
         for state in self.states.values():
@@ -162,21 +172,29 @@ class Coordinator(DataUpdateCoordinator[dict[int, DeviceState]]):
         await self.async_poll_round()
         return self.states
 
-    async def async_poll_round(self, *, background: bool = False) -> None:
+    async def async_poll_round(
+        self, *, background: bool = False
+    ) -> GatewayError | None:
         async with self._round_lock:
             started = asyncio.get_running_loop().time()
-            await self._poll_devices(background=background)
+            error = await self._poll_devices(background=background)
             if self.devices:
                 self._round_times.append(
                     (asyncio.get_running_loop().time() - started) * 1000
                 )
 
-    async def _poll_devices(self, *, background: bool) -> None:
-        for device in self.devices:
+            return error
+
+    async def _poll_devices(self, *, background: bool) -> GatewayError | None:
+        for offset in range(len(self.devices)):
+            index = (self._next_slave_index + offset) % len(self.devices)
+            device = self.devices[index]
             if background and self.background_polling_paused:
                 return
             state = self.states[device.slave]
             started = asyncio.get_running_loop().time()
+            if background and started < state.next_probe_at:
+                continue
             _LOGGER.debug("Poll slave %s", device.slave)
             try:
                 data = ModbusData()
@@ -187,14 +205,15 @@ class Coordinator(DataUpdateCoordinator[dict[int, DeviceState]]):
                         spec.request(device.slave), poll=True
                     )
                     device.profile.decode(spec, response, data)
-            except GatewayError:
+            except GatewayError as error:
                 self.gateway_lost()
-                return
+                if isinstance(error, GatewayExchangeError):
+                    self._record_slave_failure(device.slave, state)
+                    self._next_slave_index = (index + 1) % len(self.devices)
+                    self.async_set_updated_data(self.states)
+                return error
             except TimeoutError, ProtocolError:
-                state.consecutive_failures += 1
-                if state.consecutive_failures >= 3 and state.available:
-                    _LOGGER.warning("Slave #%s unavailable", device.slave)
-                    state.available = False
+                self._record_slave_failure(device.slave, state)
             else:
                 self._backoff_index = 0
                 if not state.available and state.consecutive_failures >= 3:
@@ -205,15 +224,31 @@ class Coordinator(DataUpdateCoordinator[dict[int, DeviceState]]):
                 state.discrete_inputs = data.discrete_inputs
                 state.poll_started = started
                 state.consecutive_failures = 0
+                state.next_probe_at = 0
                 state.available = True
             self.async_set_updated_data(self.states)
 
+    def _record_slave_failure(self, slave: int, state: DeviceState) -> None:
+        state.consecutive_failures += 1
+        if state.consecutive_failures >= 3:
+            if state.available:
+                _LOGGER.warning("Slave #%s unavailable", slave)
+            state.available = False
+            delay = SLAVE_POLL_BACKOFF[
+                min(state.consecutive_failures - 3, len(SLAVE_POLL_BACKOFF) - 1)
+            ]
+            state.next_probe_at = asyncio.get_running_loop().time() + delay
+
+    def can_control(self, slave: int) -> bool:
+        return (
+            not self.scanning
+            and self.gateway_available
+            and not self._stream_reset_pending
+            and self.states[slave].available
+        )
+
     async def async_command(self, slave: int, request: bytes, key: CommandKey) -> None:
-        if (
-            self.scanning
-            or not self.gateway_available
-            or not self.states[slave].available
-        ):
+        if not self.can_control(slave):
             raise OfflineError("Device unavailable or scan in progress")
         try:
             await self.transport.submit(request, key=key)
@@ -227,11 +262,7 @@ class Coordinator(DataUpdateCoordinator[dict[int, DeviceState]]):
 
     async def async_action_command(self, slave: int, request: bytes) -> None:
         """Send one FIFO action without stateful latest-wins coalescing."""
-        if (
-            self.scanning
-            or not self.gateway_available
-            or not self.states[slave].available
-        ):
+        if not self.can_control(slave):
             raise OfflineError("Device unavailable or scan in progress")
         try:
             await self.transport.submit_action(request)
@@ -246,12 +277,14 @@ class Coordinator(DataUpdateCoordinator[dict[int, DeviceState]]):
 
     async def _loop(self) -> None:
         while not self._closed:
-            if not self.gateway_available:
-                await asyncio.sleep(self.next_backoff())
+            if not self.gateway_available or self._stream_reset_pending:
+                if not self.gateway_available:
+                    await asyncio.sleep(self.next_backoff())
                 try:
                     async with self._round_lock:
                         await self.transport.connect()
                 except GatewayError:
+                    self.gateway_lost()
                     continue
             if self.background_polling_paused:
                 await self._wait_for_schedule()
@@ -259,7 +292,7 @@ class Coordinator(DataUpdateCoordinator[dict[int, DeviceState]]):
             self._schedule_wake.clear()
             started = asyncio.get_running_loop().time()
             await self.async_poll_round(background=True)
-            if not self.gateway_available:
+            if not self.gateway_available or self._stream_reset_pending:
                 continue
             remaining = self.poll_interval - (
                 asyncio.get_running_loop().time() - started

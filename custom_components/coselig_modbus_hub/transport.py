@@ -13,6 +13,7 @@ from .const import (
     ACTION_CONTROL_CAPACITY,
     DEFAULT_TIMEOUT,
     STATEFUL_CONTROL_CAPACITY,
+    TCP_RECONNECT_DELAY,
 )
 from .protocol import (
     CRCError,
@@ -30,6 +31,10 @@ CommandKey = tuple[int, str, str]
 
 class GatewayError(ConnectionError):
     """A TCP failure, distinct from a slave transaction timeout."""
+
+
+class GatewayExchangeError(GatewayError):
+    """TCP failed during an active transaction, after connecting."""
 
 
 class OfflineError(ConnectionError):
@@ -96,6 +101,7 @@ class Transport:
         self.on_connected: Callable[[], None] | None = None
         self.on_stream_reset: Callable[[], None] | None = None
         self._connection_lock = asyncio.Lock()
+        self._reconnect_at = 0.0
         self._controls: OrderedDict[CommandKey | ActionSlot, Pending] = OrderedDict()
         self._next_action_sequence = 0
         self._polls: deque[Pending] = deque()
@@ -151,12 +157,18 @@ class Transport:
             raise OfflineError("Transport closed")
         if self.connected:
             return
+        delay = self._reconnect_at - asyncio.get_running_loop().time()
+        if delay > 0:
+            await asyncio.sleep(delay)
+            if self._closed:
+                raise OfflineError("Transport closed")
         try:
             async with asyncio.timeout(self.timeout):
                 self._reader, self._writer = await asyncio.open_connection(
                     self.host, self.port
                 )
         except (OSError, TimeoutError) as error:
+            self._defer_reconnect()
             raise GatewayError("Cannot connect to gateway") from error
         if self._connections:
             self.statistics.reconnect_count += 1
@@ -169,6 +181,10 @@ class Transport:
 
         if self.on_connected is not None:
             self.on_connected()
+
+    def _defer_reconnect(self) -> None:
+        # Every connect caller shares this deadline, including in-round polls and scans.
+        self._reconnect_at = asyncio.get_running_loop().time() + TCP_RECONNECT_DELAY
 
     async def disconnect(self) -> None:
         async with self._connection_lock:
@@ -253,6 +269,7 @@ class Transport:
             pending.set_exception(gateway_error)
         if writer is not None:
             writer.close()
+            self._defer_reconnect()
         _LOGGER.debug("Gateway RX stream ended", exc_info=error)
         self._notify_connection_lost()
 
@@ -399,7 +416,7 @@ class Transport:
                 source=source,
                 latency_ms=(asyncio.get_running_loop().time() - started) * 1000,
             )
-            raise GatewayError("Gateway connection lost") from error
+            raise GatewayExchangeError("Gateway connection lost") from error
         finally:
             if self._pending_response is pending:
                 self._pending_response = None
@@ -418,32 +435,37 @@ class Transport:
                 self._idle.set()
                 continue
             try:
-                if item.future.cancelled():
-                    continue
-                result = await self._exchange(item.request, item.source)
-                self.statistics.successful_requests += 1
-                if not item.future.done():
-                    item.future.set_result(result)
+                try:
+                    if item.future.cancelled():
+                        continue
+                    result = await self._exchange(item.request, item.source)
+                    self.statistics.successful_requests += 1
+                    if not item.future.done():
+                        item.future.set_result(result)
+                except Exception as error:
+                    self.statistics.failed_requests += 1
+                    if isinstance(error, TimeoutError):
+                        self.statistics.timeout_count += 1
+                    if isinstance(error, CRCError):
+                        self.statistics.crc_error_count += 1
+                    if not isinstance(error, DeviceException):
+                        # Keep reset notification ordered with socket replacement.
+                        async with self._connection_lock:
+                            self.discard_controls()
+                            if (
+                                not isinstance(error, GatewayError)
+                                and self.on_stream_reset
+                            ):
+                                self.on_stream_reset()
+                            await self._disconnect()
+                            self._defer_reconnect()
+                            if isinstance(error, GatewayError):
+                                self._notify_connection_lost()
+                    if not item.future.done():
+                        item.future.set_exception(error)
             except asyncio.CancelledError:
                 item.future.cancel()
                 raise
-            except Exception as error:
-                self.statistics.failed_requests += 1
-                if isinstance(error, TimeoutError):
-                    self.statistics.timeout_count += 1
-                if isinstance(error, CRCError):
-                    self.statistics.crc_error_count += 1
-                if not isinstance(error, DeviceException):
-                    # Keep reset notification ordered with socket replacement.
-                    async with self._connection_lock:
-                        self.discard_controls()
-                        await self._disconnect()
-                        if isinstance(error, GatewayError):
-                            self._notify_connection_lost()
-                        elif self.on_stream_reset is not None:
-                            self.on_stream_reset()
-                if not item.future.done():
-                    item.future.set_exception(error)
 
     async def close(self) -> None:
         self._closed = True
