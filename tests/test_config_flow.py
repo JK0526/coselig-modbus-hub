@@ -190,8 +190,8 @@ async def test_initial_add_flow_has_summary_before_create_and_p404_default(flow)
         await flow._scan_task
         assert (await flow.async_step_scan())["step_id"] == "scan_result"
         assert _choices(await flow.async_step_scan_result(), "devices") == [
-            {"value": "63", "label": "Slave 63 · New"},
-            {"value": "70", "label": "Slave 70 · New"},
+            {"value": "63", "label": "Slave 63"},
+            {"value": "70", "label": "Slave 70"},
         ]
         result = await flow.async_step_scan_result({"devices": ["63", "70"]})
         assert result["step_id"] == "model"
@@ -284,7 +284,7 @@ async def test_s402_reserves_scanned_slave_one_but_allows_same_id_as_device(
     options._found = [1, 51]
     options._detections = {1: ScanResult(1), 51: ScanResult(51)}
     result = await options.async_step_scan_result()
-    assert _choices(result, "devices") == [{"value": "51", "label": "Slave 51 · New"}]
+    assert _choices(result, "devices") == [{"value": "51", "label": "Slave 51"}]
     assert "Slave #1 is reserved" in result["description_placeholders"]["reserved"]
     rejected = await options.async_step_scan_result({"devices": ["1"]})
     assert rejected["errors"] == {"base": "reserved_slave_one"}
@@ -712,7 +712,7 @@ async def test_options_menus_and_add_only_new_with_confirmation(options, entry, 
         63: ScanResult(63, DeviceFamily.DIMMER, (Model.P404, Model.P210), Model.P404)
     }
     result = await options.async_step_scan_result()
-    assert _choices(result, "devices") == [{"value": "63", "label": "Slave 63 · New"}]
+    assert _choices(result, "devices") == [{"value": "63", "label": "Slave 63"}]
     assert "Slave 1 · P404" in result["description_placeholders"]["existing"]
     # Deselecting all New devices raises a validation error; it cannot remove existing.
     empty = await options.async_step_scan_result({"devices": []})
@@ -2360,3 +2360,50 @@ async def test_completed_scan_results_ignored_after_borrowed_hub_stops(
     assert (await options.async_step_scan())["step_id"] == "scan_failed"
     assert options._scan_task is None
     assert not options._found
+
+
+async def test_batch_add_fifty_mixed_devices(flow):
+    flow._found = list(range(2, 52))
+    flow._detections = {
+        slave: ScanResult(
+            slave,
+            recommended=Model.P404 if slave % 2 else Model.P210,
+            confidence=Confidence.HIGH,
+        )
+        for slave in range(5, 52)
+    }
+    flow._detections[2] = ScanResult(2, candidates=(Model.R410,))
+    flow._detections[3] = ScanResult(
+        3, recommended=Model.P404, confidence=Confidence.LOW
+    )
+
+    result = await flow.async_step_scan_result({"add_all": True})
+    assert result["step_id"] == "batch_model"
+    assert result["description_placeholders"]["pending"] == "3, 4"
+    result = await flow.async_step_batch_model({"devices": [], "model": "p210"})
+    assert result["errors"] == {"base": "batch_model_mismatch"}
+    result = await flow.async_step_batch_model({"devices": ["3", "4"], "model": "p210"})
+    assert result["step_id"] == "add_summary"
+    assert result["description_placeholders"]["count"] == "50"
+    assert {device.model for device in flow._working_devices} == set(Model)
+    assert flow._working_devices[1].group_a == GroupMode.SINGLE
+    assert "devices" not in flow._options
+
+
+async def test_batch_excludes_reserved_address_and_preserves_existing(options):
+    options._found = [1, 2, 3]
+    options._s402_ids = [1]
+    options._existing = {2: Device(2, Model.P210), 4: Device(4, Model.R410)}
+    options._detections = {3: ScanResult(3, candidates=(Model.R410,))}
+    result = await options.async_step_scan_result({"add_all": True})
+    assert result["step_id"] == "add_summary"
+    assert [device.slave for device in options._working_devices] == [3]
+    assert set(options._existing) == {2, 4}
+
+
+async def test_batch_with_only_reserved_slave_has_no_additions(options):
+    options._found = [1]
+    options._s402_ids = [1]
+    result = await options.async_step_scan_result({"add_all": True})
+    assert result["step_id"] == "scan_no_new"
+    assert options._working_devices == []

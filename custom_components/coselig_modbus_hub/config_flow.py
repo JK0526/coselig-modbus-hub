@@ -292,6 +292,8 @@ class ProfileFlow:
             self._new_slaves() if isinstance(self, CoseligOptionsFlow) else self._found
         )
         if user_input is not None:
+            if user_input.get("add_all"):
+                return await self._start_batch(new_slaves)
             self._selected = sorted(int(value) for value in user_input["devices"])
             if self._s402_ids and 1 in self._selected:
                 return self.async_show_form(
@@ -320,12 +322,74 @@ class ProfileFlow:
 
     def _scan_result_schema(self, new_slaves: list[int]) -> vol.Schema:
         options = [
-            {"value": str(slave), "label": f"Slave {slave} · New"}
+            {"value": str(slave), "label": f"Slave {slave}"}
             for slave in new_slaves
             if not self._s402_ids or slave != 1
         ]
         return vol.Schema(
-            {vol.Required("devices", default=[]): select(options, multiple=True)}
+            {
+                vol.Required("devices", default=[]): select(options, multiple=True),
+                vol.Optional("add_all", default=False): bool,
+            }
+        )
+
+    async def _start_batch(self, slaves: list[int]) -> ConfigFlowResult:
+        self._flow_action = "add"
+        self._edit_old = None
+        self._working_devices = []
+        self._selected = []
+        for slave in slaves:
+            if slave == 1 and self._s402_ids:
+                continue
+            detection = self._detections.get(slave, ScanResult(slave))
+            model = None
+            if detection.candidates == (Model.R410,):
+                model = Model.R410
+            elif detection.confidence == Confidence.HIGH:
+                model = detection.recommended
+            if model is None:
+                self._selected.append(slave)
+            else:
+                self._working_devices.append(Device(slave, model))
+        return await self.async_step_batch_model()
+
+    async def async_step_batch_model(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        errors = {}
+        if user_input is not None:
+            model = Model(user_input["model"])
+            slaves = {int(value) for value in user_input["devices"]}
+            if (
+                slaves
+                and slaves <= set(self._selected)
+                and all(model in self._model_candidates(slave) for slave in slaves)
+            ):
+                self._working_devices.extend(Device(slave, model) for slave in slaves)
+                self._selected = [
+                    slave for slave in self._selected if slave not in slaves
+                ]
+            else:
+                errors["base"] = "batch_model_mismatch"
+        if not self._selected:
+            if not self._working_devices:
+                return await self.async_step_scan_no_new()
+            self._working_devices.sort(key=lambda device: device.slave)
+            return self._show_profile_summary()
+        return self.async_show_form(
+            step_id="batch_model",
+            errors=errors,
+            description_placeholders={
+                "pending": ", ".join(str(slave) for slave in self._selected),
+            },
+            data_schema=vol.Schema(
+                {
+                    vol.Required("devices", default=[]): select(
+                        [str(slave) for slave in self._selected], multiple=True
+                    ),
+                    vol.Required("model"): select([model.value for model in Model]),
+                }
+            ),
         )
 
     def _scan_result_placeholders(self) -> dict[str, str]:

@@ -47,8 +47,9 @@
       "scan_result": {
         "title": "Add new devices",
         "description": "Existing devices:\n{existing}\n\nMissing devices remain configured:\n{missing}\n\nOnly newly found devices can be selected here. {reserved}",
-        "data": {"devices": "New devices to add"}
+        "data": {"add_all": "Add all with default output modes", "devices": "New devices to add"}
       },
+      "batch_model": {"title": "Confirm unverified devices", "description": "Confirm the model for these Slave IDs: {pending}. Select one or more devices with the same model and apply the model shown on their labels.", "data": {"devices": "Devices to configure", "model": "Model"}},
       "model": {
         "title": "Slave {slave}: confirm model",
         "description": "Detected family: {family}; suggested model: {recommended}. {model_reason}",
@@ -70,7 +71,8 @@
         "menu_options": {"confirm_edit": "Confirm changes", "cancel_edit": "Cancel"}
       }
     },
-    "error": {"invalid_host": "Enter a valid IP or hostname.", "cannot_connect": "Cannot connect to gateway. Check the address, port and power.", "invalid_range": "Start must not exceed end.", "invalid_poll_interval": "Interval must be 0 or at least 0.5 seconds.", "no_devices": "Select at least one new device to add.", "no_devices_to_remove": "Select at least one device to remove.", "invalid_s402_id": "Enter an S402 ID from 0 to 255.", "duplicate_s402_id": "This S402 ID is already configured.", "reserved_slave_one": "S402 4x mode reserves Modbus Slave #1. Remove or change Slave #1 before adding S402, or remove S402 before adding Slave #1.", "no_s402_to_remove": "Select at least one S402 device to remove."},
+    "error": {
+      "batch_model_mismatch": "Select at least one device and choose a compatible model for all selected devices.","invalid_host": "Enter a valid IP or hostname.", "cannot_connect": "Cannot connect to gateway. Check the address, port and power.", "invalid_range": "Start must not exceed end.", "invalid_poll_interval": "Interval must be 0 or at least 0.5 seconds.", "no_devices": "Select at least one new device to add.", "no_devices_to_remove": "Select at least one device to remove.", "invalid_s402_id": "Enter an S402 ID from 0 to 255.", "duplicate_s402_id": "This S402 ID is already configured.", "reserved_slave_one": "S402 4x mode reserves Modbus Slave #1. Remove or change Slave #1 before adding S402, or remove S402 before adding Slave #1.", "no_s402_to_remove": "Select at least one S402 device to remove."},
     "abort": {"already_configured": "This gateway is already configured.", "user_cancelled": "Setup cancelled. No changes saved."},
     "progress": {"scan": "Scanning {current}/{total}; found {found} devices."}
   },
@@ -180,9 +182,10 @@
       },
       "scan_result": {
         "title": "Add new devices",
-        "description": "Existing devices:\n{existing}\n\nMissing devices remain configured:\n{missing}\n\nOnly newly found devices can be selected here.",
-        "data": {"devices": "New devices to add"}
+        "description": "Existing devices:\n{existing}\n\nMissing devices remain configured:\n{missing}\n\nOnly newly found devices can be selected here. {reserved}",
+        "data": {"add_all": "Add all with default output modes", "devices": "New devices to add"}
       },
+      "batch_model": {"title": "Confirm unverified devices", "description": "Confirm the model for these Slave IDs: {pending}. Select one or more devices with the same model and apply the model shown on their labels.", "data": {"devices": "Devices to configure", "model": "Model"}},
       "model": {
         "title": "Confirm device model",
         "description": "Slave {slave}\nDetected family: {family}; suggested model: {recommended}. {model_reason}",
@@ -250,7 +253,8 @@
         "menu_options": {"edit_r410_cover": "Edit Cover", "remove_r410_cover": "Remove Cover", "back_to_r410_output_configuration": "Back to previous step"}
       }
     },
-    "error": {"invalid_range": "Start must not exceed end.", "invalid_poll_interval": "Interval must be 0 or at least 0.5 seconds.", "no_devices": "Select at least one new device to add.", "no_devices_to_remove": "Select at least one device to remove.", "invalid_s402_id": "Enter an S402 ID from 0 to 255.", "duplicate_s402_id": "This S402 ID is already configured.", "reserved_slave_one": "S402 4x mode reserves Modbus Slave #1. Remove or change Slave #1 before adding S402, or remove S402 before adding Slave #1.", "no_s402_to_remove": "Select at least one S402 device to remove.", "cover_r410_unavailable": "Choose an R410 with at least two unallocated Relays.", "invalid_cover_name": "Enter a non-empty Cover name.", "invalid_cover_device_class": "Choose a valid Home Assistant Cover device class or leave it blank.", "invalid_cover_mode": "Choose a valid two-relay or three-relay mode.", "insufficient_cover_relays": "At least 2 unused Relays are required; three-relay mode requires 3.", "invalid_cover_relays": "Choose distinct unused Relays for this Cover.", "invalid_cover_pulse": "Pulse duration must be 0.1–25.0 seconds in 0.1-second steps.", "cover_not_found": "This Cover no longer exists. Return to Cover management and try again.", "device_not_found": "The selected device was not found. Select it again."},
+    "error": {
+      "batch_model_mismatch": "Select at least one device and choose a compatible model for all selected devices.","invalid_range": "Start must not exceed end.", "invalid_poll_interval": "Interval must be 0 or at least 0.5 seconds.", "no_devices": "Select at least one new device to add.", "no_devices_to_remove": "Select at least one device to remove.", "invalid_s402_id": "Enter an S402 ID from 0 to 255.", "duplicate_s402_id": "This S402 ID is already configured.", "reserved_slave_one": "S402 4x mode reserves Modbus Slave #1. Remove or change Slave #1 before adding S402, or remove S402 before adding Slave #1.", "no_s402_to_remove": "Select at least one S402 device to remove.", "cover_r410_unavailable": "Choose an R410 with at least two unallocated Relays.", "invalid_cover_name": "Enter a non-empty Cover name.", "invalid_cover_device_class": "Choose a valid Home Assistant Cover device class or leave it blank.", "invalid_cover_mode": "Choose a valid two-relay or three-relay mode.", "insufficient_cover_relays": "At least 2 unused Relays are required; three-relay mode requires 3.", "invalid_cover_relays": "Choose distinct unused Relays for this Cover.", "invalid_cover_pulse": "Pulse duration must be 0.1–25.0 seconds in 0.1-second steps.", "cover_not_found": "This Cover no longer exists. Return to Cover management and try again.", "device_not_found": "The selected device was not found. Select it again."},
     "progress": {"scan": "Scanning {current}/{total}; found {found} devices."},
     "abort": {"options_changed": "Options changed in another session. Reopen the options flow.", "invalid_stored_options": "Stored device or R410 Cover settings are invalid. Correct the options before continuing."}
   }

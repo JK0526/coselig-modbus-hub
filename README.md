@@ -138,7 +138,7 @@ Backend TraceBuffer 保留最多 **200 筆**，目前頁面另暫存最多 **100
 
 ## 更新
 
-測試版 **v1.6.5-beta.2** 延續 P210／P404 辨識與型號修正、單台設備故障隔離，並修正控制命令遭拒時的樂觀狀態回復、CCT 成對命令入列，以及掃描期間 Reload／Unload 的清理。請參考 [beta.2 發布說明](docs/v1.6.5-beta.2-release-notes.md) 與 [beta.1 發布說明](docs/v1.6.5-beta.1-release-notes.md)。
+測試版 **v1.6.5-beta.3** 新增掃描結果的「全部新增」與待辨識設備的批次型號確認。請參考 [beta.3 發布說明](docs/v1.6.5-beta.3-release-notes.md)。
 
 HACS 會依 GitHub Release 提供可更新版本。**v1.6.4** 是目前穩定版，可透過一般 HACS 更新檢查取得，無需啟用預發布版本更新。更新前請閱讀 [v1.6.4 Release Notes](docs/v1.6.4-release-notes.md)；Config Entry schema 維持 2.1，不需只為更新版本而刪除並重建整合。
 
@@ -160,3 +160,7 @@ HACS 會依 GitHub Release 提供可更新版本。**v1.6.4** 是目前穩定版
 - [架構文件](docs/v1.3.0-architecture.md)
 - [實機驗收清單](docs/v1.0-acceptance.md)
 - [所有 GitHub Releases](https://github.com/JK0526/coselig-modbus-hub/releases)
+
+### 批次新增掃描結果
+
+在掃描結果勾選「全部新增（使用預設輸出模式）」。已安裝的設備（含本次未掃到的設備）會保留；啟用 S402 時略過保留的 Slave #1。高可信度調光器與已辨識的 R410 可直接套用預設模式。其餘設備請依實體標籤選擇同型號的設備，分批套用。確認摘要後才寫入；若需要個別設定 CCT，請使用原有的手動選擇流程。
