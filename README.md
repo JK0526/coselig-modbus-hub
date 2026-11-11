@@ -138,7 +138,7 @@ Backend TraceBuffer 保留最多 **200 筆**，目前頁面另暫存最多 **100
 
 ## 更新
 
-測試版 **v1.6.5-beta.4** 新增 Monitor 被動 RX 監聽。請參考 [beta.4 發布說明](docs/v1.6.5-beta.4-release-notes.md)。
+測試版 **v1.6.5-beta.5** 將被動 RX 整合到 Monitor 原始封包時間軸，可用 Slave 或「未配對 RX」篩選，並點選查看 HEX、功能碼與 CRC。請參考 [beta.5 發布說明](docs/v1.6.5-beta.5-release-notes.md)。
 
 測試版 **v1.6.5-beta.3** 新增掃描結果的「全部新增」與待辨識設備的批次型號確認。請參考 [beta.3 發布說明](docs/v1.6.5-beta.3-release-notes.md)。
 

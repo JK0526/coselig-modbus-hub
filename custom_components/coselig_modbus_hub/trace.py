@@ -93,5 +93,8 @@ class PassiveRxBuffer:
     def clear(self) -> None:
         self.enabled = False
         self.owner = None
+        self.clear_entries()
+
+    def clear_entries(self) -> None:
         self._entries.clear()
         self._next_record = 0.0

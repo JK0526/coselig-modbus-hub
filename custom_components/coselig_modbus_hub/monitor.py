@@ -172,6 +172,7 @@ def websocket_clear(
         )
         return
     hub.transport.trace.clear()
+    hub.transport.passive_rx.clear_entries()
     connection.send_result(msg["id"])
 
 

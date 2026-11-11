@@ -56,6 +56,7 @@ class CoseligModbusMonitor extends HTMLElement {
         .stats-grid{display:grid;grid-template-columns:1fr 1fr;gap:2px 12px}.stat{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:4px 2px;border-bottom:1px solid var(--divider-color)}.stat span{color:var(--secondary-text-color);font-size:12px}.stat strong{font-size:14px;font-variant-numeric:tabular-nums}
         .section-caption{margin:-6px 0 8px;color:var(--secondary-text-color);font-size:11px}
         .device-list{display:grid;gap:4px;max-height:240px;overflow-y:auto}.device-row{width:100%;display:flex;align-items:center;justify-content:space-between;gap:8px;text-align:left;border:0;padding:6px 7px}.device-row.active{outline:1px solid var(--primary-color)}.device-main{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.device-health{white-space:nowrap;color:var(--secondary-text-color);font-size:12px}.online{color:var(--success-color,var(--primary-text-color))}.offline{color:var(--error-color)}
+        .trace-unmatched_rx{color:var(--accent-color,#ad70da)}
         .decoder-card{position:static}.decoder-grid{display:grid;grid-template-columns:minmax(100px,auto) minmax(0,1fr);gap:5px 9px;margin:0;max-height:min(38vh,360px);overflow-y:auto;font-size:13px}.decoder-grid dt{color:var(--secondary-text-color)}.decoder-grid dd{margin:0;overflow-wrap:anywhere}.empty{color:var(--secondary-text-color);padding:10px 4px}
         @media(max-width:900px){:host{height:auto;min-height:100vh;min-height:100dvh;overflow:visible}.layout{grid-template-columns:minmax(0,1fr);grid-template-areas:"sidebar" "trace";flex:none;min-height:auto;overflow:visible}.sidebar{height:auto;overflow:visible}.trace-list{flex:none;min-height:120px;max-height:55vh}.decoder-grid{max-height:40vh}}
         @media(max-width:560px){:host{padding:12px}.trace-entry{grid-template-columns:70px 65px minmax(0,1fr);gap:5px;font-size:11px}.trace-latency{grid-column:3;text-align:left}.stats-grid{grid-template-columns:1fr 1fr}}
@@ -65,7 +66,7 @@ class CoseligModbusMonitor extends HTMLElement {
         <select id="gateway" aria-label="選擇閘道器"></select>
         <select id="slave-filter" aria-label="Slave 篩選"><option value="all">Slave：全部</option></select>
         <select id="type-filter" aria-label="方向與類型篩選">
-          <option value="all">類型：全部</option><option value="TX">TX</option><option value="RX">RX</option><option value="OK">OK</option><option value="EVENT">事件</option><option value="Error">錯誤</option>
+          <option value="all">類型：全部</option><option value="TX">TX</option><option value="RX">RX</option><option value="OK">OK</option><option value="EVENT">事件</option><option id="unmatched-rx-filter" value="UNMATCHED_RX">未配對 RX</option><option value="Error">錯誤</option>
         </select>
         <button id="clear">清除封包</button><button id="pause">暫停畫面</button>
         <button id="poll-control" disabled>輪詢狀態載入中</button>
@@ -83,7 +84,6 @@ class CoseligModbusMonitor extends HTMLElement {
             <dt>平均輪詢</dt><dd id="gateway-average">—</dd><dt>佇列</dt><dd id="gateway-queue">—</dd>
             <dt>佇列峰值</dt><dd id="gateway-queue-peak">—</dd>
           </dl></section>
-          <section class="card"><h2 id="passive-rx-title">未配對 RX</h2><pre id="passive-rx-entries" style="max-height: 12rem; overflow: auto"></pre></section>
           <section id="decoder-card" class="card decoder-card"><h2>封包解析</h2><dl id="decoder" class="decoder-grid"><dd class="empty">選取一筆封包以檢視內容。</dd></dl></section>
           <section class="card"><h2>設備狀態 <small id="device-summary">0 / 0 在線</small></h2><div id="devices" class="device-list"></div></section>
           <section class="card"><h2>通訊統計</h2><div id="stats-caption" class="section-caption">自本次啟動起累計</div><div id="stats-grid" class="stats-grid">
@@ -190,7 +190,7 @@ class CoseligModbusMonitor extends HTMLElement {
       const unsubscribe = await this._connection.subscribeMessage((snapshot) => {
         if (generation !== this._generation) return;
         this._latest = snapshot;
-        this._ingestSnapshot(snapshot.entries || []);
+        this._ingestSnapshot([...(snapshot.entries || []), ...(snapshot.passive_rx_entries || [])]);
         this._renderPollControl(snapshot);
         if (!this._paused) this._render();
       }, { type: "coselig_modbus_hub/monitor/subscribe", entry_id: entry });
@@ -227,7 +227,7 @@ class CoseligModbusMonitor extends HTMLElement {
     try {
       await this._hass.callWS({ type: "coselig_modbus_hub/monitor/clear", entry_id: this._entry });
       if (generation !== this._generation) return;
-      this._latest = this._latest ? { ...this._latest, entries: [] } : null;
+      this._latest = this._latest ? { ...this._latest, entries: [], passive_rx_entries: [] } : null;
       this._resetHistory();
       this._render();
       this.shadowRoot.querySelector("#error").textContent = "";
@@ -257,13 +257,7 @@ class CoseligModbusMonitor extends HTMLElement {
     toggle.disabled = snapshot?.poll_interval == null;
     toggle.checked = Boolean(snapshot?.passive_rx_enabled);
     this.shadowRoot.querySelector("#passive-rx-label").textContent = zh ? "被動 RX 監聽" : "Passive RX listening";
-    this.shadowRoot.querySelector("#passive-rx-title").textContent = zh ? "未配對 RX" : "Unmatched RX";
-    this.shadowRoot.querySelector("#passive-rx-entries").textContent =
-      (snapshot?.passive_rx_entries || []).map((item) => {
-        const fc = item.function.toString(16).toUpperCase().padStart(2, "0");
-        const crc = item.crc_valid ? (zh ? "正確" : "valid") : (zh ? "錯誤" : "invalid");
-        return `${item.timestamp}  Slave ${item.slave}  FC${fc}  CRC ${crc}  ${item.raw_hex}`;
-      }).join("\n");
+    this.shadowRoot.querySelector("#unmatched-rx-filter").textContent = zh ? "未配對 RX" : "Unmatched RX";
   }
 
   async _togglePolling() {
@@ -393,36 +387,40 @@ class CoseligModbusMonitor extends HTMLElement {
     const slaveFilter = this.shadowRoot.querySelector("#slave-filter").value;
     const typeFilter = this.shadowRoot.querySelector("#type-filter").value;
     const devices = this._latest?.devices || [];
-    this._transactions.forEach((transaction) => {
-      if (slaveFilter !== "all" && transaction.slave !== Number(slaveFilter)) return;
-      for (const entry of transaction.entries) {
-        const status = String(entry.direction).toUpperCase();
-        if (typeFilter === "TX" && status !== "TX") continue;
-        if (typeFilter === "RX" && status !== "RX") continue;
-        if (typeFilter === "OK" && status !== "OK") continue;
-        if (typeFilter === "EVENT" && status !== "EVENT") continue;
-        if (typeFilter === "Error" && !["TIMEOUT", "CRC ERROR", "ERROR"].includes(status)) continue;
-        const date = new Date(entry.timestamp);
-        const time = `${date.toLocaleTimeString(this._hass?.language || "zh-TW", { hour12: false })}.${String(date.getMilliseconds()).padStart(3, "0")}`;
-        const classKey = status.toLowerCase().replaceAll(" ", "-");
-        const row = document.createElement("div");
-        row.className = `trace-entry trace-${classKey}${this._selectedTransactionKey === transaction.key ? " selected" : ""}`;
-        row.dataset.entryKey = CoseligModbusMonitor.entryKey(entry);
-        row.dataset.entryTimestamp = String(entry.timestamp ?? "");
-        row.onclick = () => {
-          this._selectedTransactionKey = transaction.key;
-          this._renderTrace({ preserveAnchor: true });
-          this._renderDecoder(transaction, devices, this._latest?.s402_devices || []);
-          this._scrollDecoderIntoViewIfNeeded();
-        };
-        const timestamp = document.createElement("span"); timestamp.className = "trace-time"; timestamp.textContent = time;
-        const direction = document.createElement("span"); direction.className = `trace-status trace-${classKey}`; direction.textContent = status.padEnd(9);
-        const raw = document.createElement("span"); raw.className = `trace-raw${["TX", "RX", "EVENT"].includes(status) ? ` trace-raw-${status.toLowerCase()}` : ""}`; raw.textContent = entry.raw_hex || "";
-        row.append(timestamp, direction, raw);
-        if (entry.latency_ms != null) { const latency = document.createElement("span"); latency.className = "trace-latency"; latency.textContent = `${Number(entry.latency_ms).toFixed(1)} ms`; row.append(latency); }
-        list.append(row);
-      }
-    });
+    const transactionsByEntry = new Map();
+    for (const transaction of this._transactions) {
+      for (const entry of transaction.entries) transactionsByEntry.set(entry, transaction);
+    }
+    for (const entry of this._history) {
+      const transaction = transactionsByEntry.get(entry);
+      if (slaveFilter !== "all" && transaction.slave !== Number(slaveFilter)) continue;
+      const status = String(entry.direction).toUpperCase();
+      if (typeFilter === "UNMATCHED_RX" && status !== "UNMATCHED_RX") continue;
+      if (typeFilter === "TX" && status !== "TX") continue;
+      if (typeFilter === "RX" && status !== "RX") continue;
+      if (typeFilter === "OK" && status !== "OK") continue;
+      if (typeFilter === "EVENT" && status !== "EVENT") continue;
+      if (typeFilter === "Error" && !["TIMEOUT", "CRC ERROR", "ERROR"].includes(status)) continue;
+      const date = new Date(entry.timestamp);
+      const time = `${date.toLocaleTimeString(this._hass?.language || "zh-TW", { hour12: false })}.${String(date.getMilliseconds()).padStart(3, "0")}`;
+      const classKey = status.toLowerCase().replaceAll(" ", "-");
+      const row = document.createElement("div");
+      row.className = `trace-entry trace-${classKey}${this._selectedTransactionKey === transaction.key ? " selected" : ""}`;
+      row.dataset.entryKey = CoseligModbusMonitor.entryKey(entry);
+      row.dataset.entryTimestamp = String(entry.timestamp ?? "");
+      row.onclick = () => {
+        this._selectedTransactionKey = transaction.key;
+        this._renderTrace({ preserveAnchor: true });
+        this._renderDecoder(transaction, devices, this._latest?.s402_devices || []);
+        this._scrollDecoderIntoViewIfNeeded();
+      };
+      const timestamp = document.createElement("span"); timestamp.className = "trace-time"; timestamp.textContent = time;
+      const direction = document.createElement("span"); direction.className = `trace-status trace-${classKey}`; direction.textContent = status === "UNMATCHED_RX" ? this.shadowRoot.querySelector("#unmatched-rx-filter").textContent : status.padEnd(9);
+      const raw = document.createElement("span"); raw.className = `trace-raw${["TX", "RX", "EVENT"].includes(status) ? ` trace-raw-${status.toLowerCase()}` : ""}`; raw.textContent = entry.raw_hex || "";
+      row.append(timestamp, direction, raw);
+      if (entry.latency_ms != null) { const latency = document.createElement("span"); latency.className = "trace-latency"; latency.textContent = `${Number(entry.latency_ms).toFixed(1)} ms`; row.append(latency); }
+      list.append(row);
+    }
     if (!list.children.length) { const empty = document.createElement("div"); empty.className = "empty"; empty.textContent = "沒有符合篩選條件的 Trace"; list.append(empty); }
     if (this._autoScroll) list.scrollTop = list.scrollHeight;
     else if (!preserveAnchor) list.scrollTop = 0;
@@ -508,6 +506,10 @@ class CoseligModbusMonitor extends HTMLElement {
     let current = null;
     for (const entry of entries) {
       const direction = String(entry.direction).toUpperCase();
+      if (direction === "UNMATCHED_RX") {
+        transactions.push({ tx: null, rx: null, statuses: [], entries: [entry], slave: entry.slave });
+        continue;
+      }
       if (direction === "EVENT") {
         transactions.push({ tx: null, rx: null, statuses: [entry], entries: [entry], slave: null });
         continue;
@@ -644,6 +646,16 @@ class CoseligModbusMonitor extends HTMLElement {
   }
 
   static decodeTransaction(transaction, device = null, s402Devices = []) {
+    const unmatched = transaction.entries[0];
+    if (unmatched.direction === "UNMATCHED_RX") {
+      return [
+        ["類型 / Type", "UNMATCHED_RX"],
+        ["Slave", String(unmatched.slave)],
+        ["功能碼 / Function", `FC${unmatched.function.toString(16).toUpperCase().padStart(2, "0")}`],
+        ["CRC", unmatched.crc_valid ? "正確 / Valid" : "錯誤 / Invalid"],
+        ["HEX", unmatched.raw_hex],
+      ];
+    }
     const eventTrace = transaction.entries.find((entry) => String(entry.direction).toUpperCase() === "EVENT");
     if (eventTrace) {
       const bytes = this.parseHex(eventTrace.raw_hex);

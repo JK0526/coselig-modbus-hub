@@ -42,7 +42,7 @@ class Element {
 }
 
 const selectors = [
-  '#passive-rx-toggle', '#passive-rx-label', '#passive-rx-title', '#passive-rx-entries',
+  '#passive-rx-toggle', '#passive-rx-label', '#unmatched-rx-filter',
   '#gateway', '#slave-filter', '#type-filter', '#clear', '#pause', '#poll-control', '#auto-scroll',
   '#error', '#trace', '#gateway-status', '#gateway-poll', '#gateway-poll-state', '#gateway-devices',
   '#gateway-last', '#gateway-average', '#gateway-queue', '#gateway-queue-peak',
@@ -736,23 +736,48 @@ test('late subscription resolution after detach is unsubscribed', async () => {
   finish(async () => { closed = true; }); await pending; assert.equal(closed, true);
 });
 
-test('passive RX stays outside transaction history and can be enabled with Poll=0', async () => {
+test('passive RX is shown in the timeline and can be enabled with Poll=0', async () => {
   const h = createHarness();
   h.hass.locale = { language: 'en' };
   await h.flush();
   h.subscriptions[0].callback({
     ...snapshot(), poll_interval: 0, passive_rx_enabled: false,
     passive_rx_entries: [{
-      timestamp: '2026-10-14T06:32:08.214Z', slave: 99, function: 3,
+      direction: 'UNMATCHED_RX', timestamp: '2026-10-14T06:32:08.214Z', slave: 99, function: 3,
       crc_valid: false, raw_hex: '63 03 02 00 00 00 00',
     }],
   });
   const node = (id) => h.panel.shadowRoot.querySelector(id);
   assert.equal(node('#passive-rx-label').textContent, 'Passive RX listening');
-  assert.match(node('#passive-rx-entries').textContent, /Slave 99  FC03  CRC invalid/);
-  assert.doesNotMatch(node('#trace').textContent, /Slave 99/);
+  assert.match(node('#trace').textContent, /Unmatched RX/);
+  node('#trace').children.at(-1).onclick();
+  assert.match(node('#decoder').textContent, /FC03.*Invalid.*63 03 02/);
   assert.equal(node('#passive-rx-toggle').disabled, false);
   await h.panel._togglePassiveRx(true);
   assert.equal(h.calls.at(-1).type, 'coselig_modbus_hub/monitor/passive_rx');
   assert.equal(h.calls.at(-1).enabled, true);
+});
+
+test('unmatched RX is chronological, stable at ties, deduplicated and filterable', async () => {
+  const h = createHarness(); await h.flush();
+  const tx = entry('TX', '33 03 08 2A 00 02');
+  const rx = { ...entry('RX', '33 03 04 00 00 00 00'), timestamp: '2026-10-14T06:32:08.216Z' };
+  const passive = {
+    direction: 'UNMATCHED_RX', timestamp: '2026-10-14T06:32:08.215Z',
+    slave: 99, function: 3, crc_valid: true, raw_hex: '63 03 02 00 00',
+  };
+  const update = { ...snapshot([tx, rx, { ...entry('OK'), timestamp: rx.timestamp }]), passive_rx_entries: [passive] };
+  h.subscriptions[0].callback(update);
+  h.subscriptions[0].callback(update);
+  const node = (id) => h.panel.shadowRoot.querySelector(id);
+  const rows = () => node('#trace').children.map((row) => row.className.split(' ')[1]);
+  assert.deepEqual(rows(), ['trace-tx', 'trace-unmatched_rx', 'trace-rx', 'trace-ok']);
+  assert.equal(h.panel._transactions[0].rx, rx);
+  node('#slave-filter').value = '99';
+  node('#slave-filter').onchange();
+  assert.deepEqual(rows(), ['trace-unmatched_rx']);
+  node('#slave-filter').value = 'all';
+  node('#type-filter').value = 'UNMATCHED_RX';
+  node('#type-filter').onchange();
+  assert.deepEqual(rows(), ['trace-unmatched_rx']);
 });
