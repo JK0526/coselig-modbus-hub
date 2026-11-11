@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
@@ -13,7 +14,11 @@ from .r410_cover import R410CoverConfig
 from .s402 import S402Event
 from .scanner import ScanResult, scan
 from .trace import ProtocolTraceBuffer
-from .transport import GatewayError, GatewayExchangeError, Transport
+from .transport import GatewayError, GatewayExchangeError, OfflineError, Transport
+
+
+class HubScanInterrupted(OfflineError):
+    """The borrowed Hub stopped during a scan."""
 
 
 @dataclass
@@ -22,6 +27,7 @@ class Hub:
     coordinator: Coordinator
     s402_ids: tuple[int, ...] = ()
     r410_covers: tuple[R410CoverConfig, ...] = ()
+    stopping: bool = field(default=False, init=False)
     _s402_listeners: dict[tuple[int, int], set[Callable[[S402Event], None]]] = field(
         default_factory=dict, init=False, repr=False
     )
@@ -97,7 +103,21 @@ class Hub:
     ) -> list[ScanResult]:
         async with self.coordinator.pause():
             try:
+                if self.stopping:
+                    raise HubScanInterrupted
                 return await scan(self.transport, start, end, progress)
+            except asyncio.CancelledError as error:
+                # A cancelled request Future is different from cancelling this scan task.
+                if not asyncio.current_task().cancelling():
+                    if self.stopping:
+                        raise HubScanInterrupted from error
+                    if self.transport.closed:
+                        raise OfflineError("Transport closed") from error
+                raise
+            except OfflineError as error:
+                if self.stopping:
+                    raise HubScanInterrupted from error
+                raise
             except GatewayError:
                 self.coordinator.gateway_lost()
                 raise
@@ -106,6 +126,7 @@ class Hub:
                 self.coordinator.set_poll_interval(self.coordinator.poll_interval)
 
     async def stop(self) -> None:
+        self.stopping = True
         try:
             await self.coordinator.stop()
         finally:

@@ -2225,3 +2225,138 @@ async def test_add_device_preserves_newer_scan_range(options, entry, hass):
     result = options._persist_add()
     assert (result["data"]["scan_start"], result["data"]["scan_end"]) == (70, 80)
     assert result["data"]["devices"][-1] == Device(55, Model.P210).as_dict()
+
+
+@pytest.mark.parametrize("operation", ["reload", "unload", "close_transport"])
+async def test_borrowed_scan_interrupted_and_retryable(
+    options, hass, entry, gateway, operation
+):
+    hass.config_entries.async_update_entry(
+        entry,
+        data={"host": "127.0.0.1", "port": gateway.port},
+        options={**entry.options, "poll_interval": 0},
+    )
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    original_options = dict(entry.options)
+    await _options_ready(options)
+    hub = entry.runtime_data
+    transport = hub.transport
+    gateway.block = True
+    gateway.arrived.clear()
+    assert (await options.async_step_scan_range({"scan_start": 62, "scan_end": 62}))[
+        "type"
+    ] == FlowResultType.SHOW_PROGRESS
+    task = options._scan_task
+    await gateway.arrived.wait()
+    pending = transport._pending_response
+    worker = transport._worker
+    reader = transport._reader_task
+    gateway.block = False
+
+    try:
+        if operation == "reload":
+            assert await hass.config_entries.async_reload(entry.entry_id)
+        elif operation == "unload":
+            assert await hass.config_entries.async_unload(entry.entry_id)
+        else:
+            await transport.close()
+        async with asyncio.timeout(2):
+            await asyncio.gather(task, return_exceptions=True)
+    finally:
+        gateway.release.set()
+
+    result = await options.async_step_scan()
+    assert result["step_id"] == "scan_failed"
+    reason = (await options.async_step_scan_failed())["description_placeholders"][
+        "reason"
+    ]
+    assert (
+        "transport was closed"
+        if operation == "close_transport"
+        else "reloaded or unloaded"
+    ) in reason
+    assert options._scan_task is None
+    assert not options._found and not options._detections
+    assert not hub.coordinator.scanning
+    assert pending.cancelled() and worker.done() and reader.done()
+    assert not transport.connected
+    assert (
+        transport._worker
+        is transport._reader_task
+        is transport._pending_response
+        is None
+    )
+    assert entry.options == original_options
+
+    if operation == "close_transport":
+        assert await hass.config_entries.async_unload(entry.entry_id)
+    assert (await options.async_step_rescan())["step_id"] == "scan_range"
+    await options.async_step_scan_range({"scan_start": 62, "scan_end": 62})
+    await options._scan_task
+    assert (await options.async_step_scan())["step_id"] == "scan_result"
+    assert options._found == [62]
+    assert options._scan_task is None
+    assert entry.options == original_options
+    if operation == "reload":
+        assert await hass.config_entries.async_unload(entry.entry_id)
+
+
+@pytest.mark.parametrize(
+    ("error", "reason"),
+    [
+        (asyncio.CancelledError, "Scan cancelled"),
+        (RuntimeError, "Scan failed"),
+    ],
+)
+async def test_completed_scan_error_is_consumed_and_cleared(flow, error, reason):
+    flow._gateway = {"host": "gateway", "port": 502}
+    flow._found = [62]
+    flow._detections = {62: ScanResult(62)}
+    with patch(
+        "custom_components.coselig_modbus_hub.config_flow.scan",
+        new=AsyncMock(side_effect=error),
+    ):
+        await flow.async_step_scan()
+        task = flow._scan_task
+        await asyncio.wait({task})
+    assert (await flow.async_step_scan())["step_id"] == "scan_failed"
+    assert (
+        reason
+        in (await flow.async_step_scan_failed())["description_placeholders"]["reason"]
+    )
+    assert flow._scan_task is None
+    assert not flow._found and not flow._detections
+
+
+async def test_scan_rejects_closed_transport_and_stopped_hub(options, entry, hass):
+    await _options_ready(options)
+    hub = Hub.create(hass, "gateway", 502, (), 0)
+    entry.runtime_data = hub
+    await hub.transport.close()
+    for reason in ("transport was closed", "reloaded or unloaded"):
+        await options.async_step_scan()
+        await asyncio.wait({options._scan_task})
+        assert (await options.async_step_scan())["step_id"] == "scan_failed"
+        assert (
+            reason
+            in (await options.async_step_scan_failed())["description_placeholders"][
+                "reason"
+            ]
+        )
+        assert options._scan_task is None
+        await hub.stop()
+
+
+async def test_completed_scan_results_ignored_after_borrowed_hub_stops(
+    options, entry, hass
+):
+    await _options_ready(options)
+    hub = Hub.create(hass, "gateway", 502, (), 0)
+    entry.runtime_data = hub
+    with patch.object(hub, "scan", new=AsyncMock(return_value=[ScanResult(62)])):
+        await options.async_step_scan()
+        await options._scan_task
+    await hub.stop()
+    assert (await options.async_step_scan())["step_id"] == "scan_failed"
+    assert options._scan_task is None
+    assert not options._found

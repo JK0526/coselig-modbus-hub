@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import copy
 import ipaddress
+import logging
 import re
 from typing import Any
 from uuid import uuid4
@@ -25,6 +26,7 @@ from .const import (
     DOMAIN,
 )
 from .coordinator import valid_poll_interval
+from .hub import Hub, HubScanInterrupted
 from .models import Device, GroupMode, Model, devices_from_options
 from .r410_cover import (
     R410CoverConfig,
@@ -35,7 +37,9 @@ from .r410_cover import (
 )
 from .s402 import S402_ID_MAX, S402_ID_MIN, s402_devices_from_options
 from .scanner import Confidence, ScanResult, scan
-from .transport import GatewayError, Transport
+from .transport import GatewayError, OfflineError, Transport
+
+_LOGGER = logging.getLogger(__name__)
 
 MODEL_LABELS = {
     Model.P404: "P404 — 4 路 PWM 調光器",
@@ -126,7 +130,8 @@ class ProfileFlow:
             "total": str(DEFAULT_SCAN_END - DEFAULT_SCAN_START + 1),
             "found": "0",
         }
-        self._scan_error = False
+        self._scan_error: str | None = None
+        self._scan_hub: Hub | None = None
         self._s402_ids: list[int] = []
         self._s402_pending_id: int | None = None
         self._s402_remove_selected: list[int] = []
@@ -154,9 +159,8 @@ class ProfileFlow:
         if isinstance(self, CoseligOptionsFlow) and hasattr(
             self.config_entry, "runtime_data"
         ):
-            return await self.config_entry.runtime_data.scan(
-                start, end, self._scan_progress
-            )
+            self._scan_hub = self.config_entry.runtime_data
+            return await self._scan_hub.scan(start, end, self._scan_progress)
         transport = Transport(**self._gateway)
         try:
             return await scan(transport, start, end, self._scan_progress)
@@ -167,10 +171,13 @@ class ProfileFlow:
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
         if self._scan_task is None:
-            self._scan_error = False
+            self._scan_error = None
+            self._found = []
+            self._detections = {}
             self._scan_task = self.hass.async_create_task(
                 self._run_scan(), "coselig-scan"
             )
+            self._scan_task.add_done_callback(self._retrieve_scan_exception)
         if not self._scan_task.done():
             return self.async_show_progress(
                 step_id="scan",
@@ -178,13 +185,28 @@ class ProfileFlow:
                 description_placeholders=self._progress,
                 progress_task=self._scan_task,
             )
+        task, self._scan_task = self._scan_task, None
+        hub, self._scan_hub = self._scan_hub, None
         try:
-            results = self._scan_task.result()
+            results = task.result()
+            if hub is not None and hub.stopping:
+                raise HubScanInterrupted
             self._detections = {result.slave: result for result in results}
             self._found = sorted(self._detections)
+        except HubScanInterrupted:
+            self._scan_error = "Gateway was reloaded or unloaded. Start the scan again."
+        except OfflineError:
+            self._scan_error = (
+                "Gateway transport was closed. Reload the integration, then retry."
+            )
         except GatewayError:
-            self._scan_error = True
-        self._scan_task = None
+            self._scan_error = "Gateway connection lost"
+        except asyncio.CancelledError:
+            # result() is synchronous; this cancellation is from the completed child.
+            self._scan_error = "Scan cancelled. Start the scan again."
+        except Exception:
+            _LOGGER.exception("Coselig scan failed")
+            self._scan_error = "Scan failed. Start the scan again."
         if self._scan_error or (not self._found and not self._existing):
             next_step = "scan_failed"
         elif isinstance(self, CoseligOptionsFlow) and not self._new_slaves():
@@ -192,6 +214,12 @@ class ProfileFlow:
         else:
             next_step = "scan_result"
         return self.async_show_progress_done(next_step_id=next_step)
+
+    @staticmethod
+    def _retrieve_scan_exception(task: asyncio.Task[list[ScanResult]]) -> None:
+        # The flow may be removed before HA advances the completed progress step.
+        if not task.cancelled():
+            task.exception()
 
     async def async_step_scan_no_new(
         self, user_input: dict[str, Any] | None = None
@@ -632,17 +660,15 @@ class ProfileFlow:
         return self.async_show_menu(
             step_id="scan_failed",
             menu_options=["rescan", "scan_range", "cancel"],
-            description_placeholders={
-                "reason": "Gateway connection lost"
-                if self._scan_error
-                else "No slaves found"
-            },
+            description_placeholders={"reason": self._scan_error or "No slaves found"},
         )
 
     @callback
     def async_remove(self) -> None:
-        if self._scan_task is not None:
-            self._scan_task.cancel()
+        task, self._scan_task = self._scan_task, None
+        self._scan_hub = None
+        if task is not None:
+            task.cancel()
         super().async_remove()
 
 

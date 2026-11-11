@@ -56,6 +56,7 @@ class Pending:
     request: bytes
     future: asyncio.Future[bytes | None]
     source: str
+    sent: bool = False
 
 
 @dataclass(frozen=True)
@@ -119,6 +120,10 @@ class Transport:
         self._connections = 0
         self._disconnecting = False
         self._loss_reported = False
+
+    @property
+    def closed(self) -> bool:
+        return self._closed
 
     @property
     def connected(self) -> bool:
@@ -301,17 +306,33 @@ class Transport:
     ) -> bytes | None:
         source = "scan" if exclusive else "poll" if poll else "control"
         if exclusive:
-            future = self._enqueue(request, poll, key, source)
+            item = self._enqueue(request, poll, key, source)
         else:
             async with self._gate:
-                future = self._enqueue(request, poll, key, source)
-        return await future
+                item = self._enqueue(request, poll, key, source)
+        return await item.future
 
     async def submit_action(self, request: bytes) -> bytes | None:
         """Submit a FIFO action that is never coalesced with another command."""
         async with self._gate:
-            future = self._enqueue(request, False, None, "control", action=True)
-        return await future
+            item = self._enqueue(request, False, None, "control", action=True)
+        return await item.future
+
+    async def enqueue_controls(
+        self, commands: tuple[tuple[bytes, CommandKey], ...]
+    ) -> tuple[Pending, ...]:
+        """Check capacity for the whole operation before accepting or replacing anything."""
+        async with self._gate:
+            if self._closed:
+                raise OfflineError("Transport closed")
+            new_keys = {key for _, key in commands if key not in self._controls}
+            if self.stateful_depth + len(new_keys) > self.stateful_capacity:
+                _LOGGER.warning("Stateful control queue full; new command rejected")
+                raise asyncio.QueueFull
+            return tuple(
+                self._enqueue(request, False, key, "control")
+                for request, key in commands
+            )
 
     def _enqueue(
         self,
@@ -321,7 +342,7 @@ class Transport:
         source: str,
         *,
         action: bool = False,
-    ) -> asyncio.Future[bytes | None]:
+    ) -> Pending:
         if self._closed:
             raise OfflineError("Transport closed")
         future = asyncio.get_running_loop().create_future()
@@ -349,7 +370,7 @@ class Transport:
         self._wake.set()
         if self._worker is None:
             self._worker = asyncio.create_task(self._run(), name="coselig-transport")
-        return future
+        return item
 
     @asynccontextmanager
     async def exclusive(self) -> AsyncIterator[None]:
@@ -373,8 +394,12 @@ class Transport:
                 # Observation must never turn a valid exchange into a failed one.
                 _LOGGER.debug("Modbus trace observation failed", exc_info=True)
 
-    async def _exchange(self, request: bytes, source: str) -> bytes:
+    async def _exchange(
+        self, request: bytes, source: str, item: Pending | None = None
+    ) -> bytes | None:
         await self.connect()
+        if item is not None and item.future.cancelled():
+            return None
         started = asyncio.get_running_loop().time()
         self._trace("TX", request, source=source)
         reader = self._reader
@@ -386,6 +411,9 @@ class Transport:
         self._pending_source = source
         try:
             async with asyncio.timeout(self.timeout):
+                if item is not None:
+                    # A failed write can already have handed bytes to the socket.
+                    item.sent = True
                 writer.write(request)
                 await writer.drain()
                 response = await pending
@@ -438,8 +466,9 @@ class Transport:
                 try:
                     if item.future.cancelled():
                         continue
-                    result = await self._exchange(item.request, item.source)
-                    self.statistics.successful_requests += 1
+                    result = await self._exchange(item.request, item.source, item)
+                    if result is not None:
+                        self.statistics.successful_requests += 1
                     if not item.future.done():
                         item.future.set_result(result)
                 except Exception as error:

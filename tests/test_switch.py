@@ -323,3 +323,28 @@ async def test_paused_relay_reconnect_preserves_last_known_false_coils(relays, g
     assert coordinator.states[70].available
     assert coordinator.states[70].coils == {0: False, 1: False, 2: False, 3: False}
     assert gateway.requests == []
+
+
+async def test_switch_queue_full_keeps_last_state_with_polling_disabled(
+    relays, gateway
+):
+    coordinator, entities = relays
+    assert coordinator.poll_interval == 0
+    coordinator.transport.stateful_capacity = 1
+    gateway.block = True
+    gateway.arrived.clear()
+    blocker = asyncio.create_task(coordinator.async_poll_round())
+    await gateway.arrived.wait()
+    filler = asyncio.create_task(entities[0].async_turn_off())
+    await asyncio.sleep(0)
+    relay = entities[1]
+    assert not relay.is_on
+    try:
+        with pytest.raises(HomeAssistantError) as rejected:
+            await relay.async_turn_on()
+        assert isinstance(rejected.value.__cause__, asyncio.QueueFull)
+        assert not relay.is_on
+        relay.async_write_ha_state.assert_not_called()
+    finally:
+        gateway.release.set()
+        await asyncio.gather(blocker, filler)

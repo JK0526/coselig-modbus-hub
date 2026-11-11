@@ -14,6 +14,7 @@
 - 可修改既有設備型號與輸出模式，也可個別移除設備。
 - 背景 Polling 週期可調整或停用。
 - 每個 Gateway 最多排入 256 個不同的 pending Stateful CommandKey；同 key 的未送出命令採 latest-wins。
+- Light／Switch 先確認命令已入列再更新 HA 狀態。雙色溫的亮度與色溫一起檢查佇列容量。
 - R410 Cover Action 有獨立 32 筆 FIFO 容量；Stateful 與 Action 共用全域控制順序，實際 Modbus 通訊仍維持單一 request in flight。
 - 管理員可在 Monitor 暫停／恢復背景 Poll，且不會修改儲存的 Poll 週期；Control 與 S402 EVENT 維持運作。
 - 內建 Monitor 可查看通訊紀錄，管理員可控制執行期背景 Poll。
@@ -66,7 +67,7 @@ S402 ID 與 Modbus Slave 位址屬於不同位址空間。啟用 S402 4x 模式�
 - P404／P210 可在設備頁修正型號或調整輸出模式。型號修正會重新載入整合、清除執行期退避並驗證新型號。A 組與父裝置保留原本識別。P404 改成 P210 會移除 B 組，請先檢查引用 B 組的自動化。
 - R410 的輸出配置與 Cover 管理位於所選 R410 下；S402 管理位於所選 S402 下。
 - **通訊設定**提供背景輪詢週期與搜尋範圍。Gateway Host／Port 使用 Home Assistant 原生重新設定流程。
-- 返回或取消不會保存部分修改；必須在確認頁完成變更。
+- 返回或取消不會保存部分修改；必須在確認頁完成變更。掃描中若整合重新載入或卸載，待操作完成後可從掃描錯誤頁重試。
 
 使用者可在 Home Assistant 的實體設定中自訂名稱與 Area；修改其他設備或重新載入整合不會覆寫這些設定。
 
@@ -137,7 +138,7 @@ Backend TraceBuffer 保留最多 **200 筆**，目前頁面另暫存最多 **100
 
 ## 更新
 
-測試版 **v1.6.5-beta.1** 提供 P210／P404 辨識與型號修正、單台設備故障隔離。請參考 [測試版發布說明](docs/v1.6.5-beta.1-release-notes.md)。
+測試版 **v1.6.5-beta.2** 延續 P210／P404 辨識與型號修正、單台設備故障隔離，並修正控制命令遭拒時的樂觀狀態回復、CCT 成對命令入列，以及掃描期間 Reload／Unload 的清理。請參考 [beta.2 發布說明](docs/v1.6.5-beta.2-release-notes.md) 與 [beta.1 發布說明](docs/v1.6.5-beta.1-release-notes.md)。
 
 HACS 會依 GitHub Release 提供可更新版本。**v1.6.4** 是目前穩定版，可透過一般 HACS 更新檢查取得，無需啟用預發布版本更新。更新前請閱讀 [v1.6.4 Release Notes](docs/v1.6.4-release-notes.md)；Config Entry schema 維持 2.1，不需只為更新版本而刪除並重建整合。
 
@@ -145,6 +146,8 @@ HACS 會依 GitHub Release 提供可更新版本。**v1.6.4** 是目前穩定版
 
 - [開發與維護指南](docs/development.md)
 - [v1.6.4 Release Notes](docs/v1.6.4-release-notes.md)
+- [v1.6.5-beta.2 Release Notes](docs/v1.6.5-beta.2-release-notes.md)
+- [v1.6.5-beta.1 Release Notes](docs/v1.6.5-beta.1-release-notes.md)
 - [v1.6.3 Release Notes](docs/v1.6.3-release-notes.md)
 - [v1.6.0 Release Notes](docs/v1.6.0-release-notes.md)
 - [v1.6.0 排程驗收紀錄](docs/v1.6.0-scheduler-acceptance.md)

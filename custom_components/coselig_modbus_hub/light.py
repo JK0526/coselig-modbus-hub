@@ -28,6 +28,7 @@ from .models import (
     raw_to_brightness,
     raw_to_kelvin,
 )
+from .optimistic import OptimisticValue, wait_controls
 from .profiles import OutputSpec
 from .protocol import ProtocolError
 
@@ -86,6 +87,9 @@ class CoseligLight(CoordinatorEntity[Coordinator], LightEntity):
         self._optimistic_at = -1.0
         self._last_poll = -1.0
         self._last_brightness = 255
+        self._brightness_state = OptimisticValue(0)
+        self._remembered_brightness = OptimisticValue(255)
+        self._temperature_state = OptimisticValue[int | None](None)
         self._apply_poll()
 
     @property
@@ -105,81 +109,79 @@ class CoseligLight(CoordinatorEntity[Coordinator], LightEntity):
             return
         self._last_poll = state.poll_started
         raw = state.holding_registers[self.output.registers[0]]
-        self._attr_brightness = raw_to_brightness(raw)
-        self._attr_is_on = raw > 0
-        if raw:
-            self._last_brightness = self._attr_brightness
+        brightness = raw_to_brightness(raw)
+        self._brightness_state.observe(brightness)
+        if brightness:
+            self._remembered_brightness.observe(brightness)
         if self.output.cct:
-            self._attr_color_temp_kelvin = raw_to_kelvin(
-                state.holding_registers[self.output.registers[1]]
+            self._temperature_state.observe(
+                raw_to_kelvin(state.holding_registers[self.output.registers[1]])
             )
+        self._apply_optimistic_values()
+
+    def _apply_optimistic_values(self) -> None:
+        self._attr_brightness = self._brightness_state.value
+        self._last_brightness = self._remembered_brightness.value
+        self._attr_is_on = self._attr_brightness > 0
+        self._attr_color_temp_kelvin = self._temperature_state.value
+
+    def _publish_optimistic(self) -> None:
+        self._apply_optimistic_values()
+        self.async_write_ha_state()
 
     @callback
     def _handle_coordinator_update(self) -> None:
         self._apply_poll()
         self.async_write_ha_state()
 
-    async def _command(self, register: int, value: int, command_type: str) -> None:
-        try:
-            await self.coordinator.async_command(
-                self.device.slave,
-                self.device.profile.command(self.device.slave, register, value),
-                (self.device.slave, self.output.key, command_type),
+    async def _set_output(self, raw: int, temperature: int | None = None) -> None:
+        if not self.coordinator.can_control(self.device.slave):
+            raise HomeAssistantError("Coselig device unavailable or scanning")
+        slave = self.device.slave
+        fields = [(self.output.registers[0], raw, "brightness")]
+        if temperature is not None and self.output.cct:
+            fields.append(
+                (self.output.registers[1], kelvin_to_raw(temperature), "temperature")
             )
+        try:
+            items = await self.coordinator.async_queue_controls(
+                slave,
+                tuple(
+                    (
+                        self.device.profile.command(slave, register, value),
+                        (slave, self.output.key, field),
+                    )
+                    for register, value, field in fields
+                ),
+            )
+            self._optimistic_at = asyncio.get_running_loop().time()
+            brightness = raw_to_brightness(raw)
+            self._brightness_state.stage(brightness, items[0], self._publish_optimistic)
+            if brightness:
+                self._remembered_brightness.stage(
+                    brightness, items[0], self._apply_optimistic_values
+                )
+            if len(items) == 2:
+                self._temperature_state.stage(
+                    raw_to_kelvin(fields[1][1]), items[1], self._publish_optimistic
+                )
+            self._publish_optimistic()
+            await wait_controls(items)
         except (
             ConnectionError,
             TimeoutError,
             ProtocolError,
             asyncio.QueueFull,
         ) as error:
-            # Keep optimistic values until a genuine later poll; never replay.
             raise HomeAssistantError(
                 "Coselig command failed; awaiting device polling"
             ) from error
 
     async def async_turn_on(self, **kwargs: Any) -> None:
-        if not self.coordinator.can_control(self.device.slave):
-            raise HomeAssistantError("Coselig device unavailable or scanning")
         brightness = kwargs.get(ATTR_BRIGHTNESS, self._last_brightness)
-        raw = brightness_to_raw(brightness)
-        temperature = kwargs.get(ATTR_COLOR_TEMP_KELVIN)
-        self._optimistic_at = asyncio.get_running_loop().time()
-        self._attr_brightness = raw_to_brightness(raw)
-        self._attr_is_on = raw > 0
-        if raw:
-            self._last_brightness = self._attr_brightness
-        if temperature is not None and self.output.cct:
-            self._attr_color_temp_kelvin = raw_to_kelvin(kelvin_to_raw(temperature))
-        self.async_write_ha_state()  # Before yielding to any bus I/O.
-        commands = [
-            asyncio.create_task(
-                self._command(self.output.registers[0], raw, "brightness"),
-                eager_start=True,
-            )
-        ]
-        if temperature is not None and self.output.cct:
-            commands.append(
-                asyncio.create_task(
-                    self._command(
-                        self.output.registers[1],
-                        kelvin_to_raw(temperature),
-                        "temperature",
-                    ),
-                    eager_start=True,
-                )
-            )
-        # Eager enqueue preserves action order, including ON then OFF in one loop tick.
-        # Both CCT fields are pending before yielding to the next HA action.
-        results = await asyncio.gather(*commands, return_exceptions=True)
-        for result in results:
-            if isinstance(result, BaseException):
-                raise result
+        await self._set_output(
+            brightness_to_raw(brightness), kwargs.get(ATTR_COLOR_TEMP_KELVIN)
+        )
 
     async def async_turn_off(self, **kwargs: Any) -> None:
-        if not self.coordinator.can_control(self.device.slave):
-            raise HomeAssistantError("Coselig device unavailable or scanning")
-        self._optimistic_at = asyncio.get_running_loop().time()
-        self._attr_is_on = False
-        self._attr_brightness = 0
-        self.async_write_ha_state()
-        await self._command(self.output.registers[0], 0, "brightness")
+        await self._set_output(0)

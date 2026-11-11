@@ -207,3 +207,167 @@ async def test_p210_cct_uses_two_register_shared_conversion(gateway, hass):
     finally:
         await coordinator.stop()
         await transport.close()
+
+
+@pytest.mark.parametrize("turn_on", [True, False])
+async def test_light_queue_full_leaves_state_unchanged_with_polling_disabled(
+    gateway, lights, turn_on
+):
+    coordinator, entities = lights
+    light = entities[0]
+    coordinator.set_poll_interval(0)
+    coordinator.transport.stateful_capacity = 1
+    gateway.block = True
+    gateway.arrived.clear()
+    blocker = asyncio.create_task(coordinator.async_poll_round())
+    await gateway.arrived.wait()
+    filler = asyncio.create_task(entities[1].async_turn_on(brightness=60))
+    await asyncio.sleep(0)
+    before = (
+        light.is_on,
+        light.brightness,
+        light.color_temp_kelvin,
+        light._last_brightness,
+    )
+    try:
+        with pytest.raises(HomeAssistantError) as rejected:
+            if turn_on:
+                await light.async_turn_on(brightness=190)
+            else:
+                await light.async_turn_off()
+        assert isinstance(rejected.value.__cause__, asyncio.QueueFull)
+        assert (
+            light.is_on,
+            light.brightness,
+            light.color_temp_kelvin,
+            light._last_brightness,
+        ) == before
+        light.async_write_ha_state.assert_not_called()
+    finally:
+        gateway.release.set()
+        await asyncio.gather(blocker, filler)
+
+
+async def test_cct_queue_rejection_does_not_replace_accepted_brightness(
+    gateway, lights
+):
+    coordinator, entities = lights
+    light = entities[0]
+    coordinator.set_runtime_poll_paused(True)
+    coordinator.transport.stateful_capacity = 1
+    gateway.block = True
+    gateway.arrived.clear()
+    blocker = asyncio.create_task(coordinator.async_poll_round())
+    await gateway.arrived.wait()
+    old = asyncio.create_task(light.async_turn_on(brightness=102))
+    await asyncio.sleep(0)
+    before = light.color_temp_kelvin
+    try:
+        with pytest.raises(HomeAssistantError) as rejected:
+            await light.async_turn_on(brightness=204, color_temp_kelvin=4000)
+        assert isinstance(rejected.value.__cause__, asyncio.QueueFull)
+        assert light.brightness == 102
+        assert light.color_temp_kelvin == before
+    finally:
+        gateway.release.set()
+        await asyncio.gather(blocker, old)
+    assert [(r[3], r[5]) for r in gateway.requests if r[1] == 6] == [(0x2A, 40)]
+
+
+async def test_discarded_newer_write_rolls_back_to_sent_uncertain_value(
+    gateway, lights
+):
+    coordinator, entities = lights
+    light = entities[0]
+    coordinator.set_poll_interval(0)
+    gateway.modes[1] = "timeout"
+    gateway.arrived.clear()
+    older = asyncio.create_task(light.async_turn_on(brightness=102))
+    await gateway.arrived.wait()
+    newer = asyncio.create_task(light.async_turn_on(brightness=204))
+    await asyncio.sleep(0)
+    assert light.brightness == 204
+    results = await asyncio.gather(older, newer, return_exceptions=True)
+    assert all(isinstance(result, HomeAssistantError) for result in results)
+    assert isinstance(results[0].__cause__, TimeoutError)
+    assert light.brightness == 102
+    assert [r[5] for r in gateway.requests if r[1] == 6] == [40]
+
+
+async def test_superseded_and_cancelled_writes_do_not_leave_optimistic_state(
+    gateway, lights
+):
+    coordinator, entities = lights
+    light = entities[0]
+    coordinator.set_poll_interval(0)
+    gateway.block = True
+    gateway.arrived.clear()
+    blocker = asyncio.create_task(coordinator.async_poll_round())
+    await gateway.arrived.wait()
+    initial = light.brightness
+    older = asyncio.create_task(light.async_turn_on(brightness=102))
+    newer = asyncio.create_task(light.async_turn_on(brightness=204))
+    await older
+    assert light.brightness == 204
+    newer.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await newer
+    assert light.brightness == initial
+    gateway.release.set()
+    await blocker
+    assert not [r for r in gateway.requests if r[1] == 6]
+
+
+async def test_partial_wire_cct_failure_only_rolls_back_unsent_temperature(
+    gateway, lights
+):
+    coordinator, entities = lights
+    light = entities[0]
+    coordinator.set_poll_interval(0)
+    before = light.color_temp_kelvin
+    gateway.modes[1] = "timeout"
+    with pytest.raises(HomeAssistantError):
+        await light.async_turn_on(brightness=204, color_temp_kelvin=4000)
+    assert light.brightness == 204
+    assert light.color_temp_kelvin == before
+    assert [(r[3], r[5]) for r in gateway.requests if r[1] == 6] == [(0x2A, 80)]
+
+
+async def test_older_unsent_failure_does_not_override_newer_control(gateway, lights):
+    coordinator, entities = lights
+    light = entities[0]
+    gateway.block = True
+    gateway.arrived.clear()
+    blocker = asyncio.create_task(coordinator.async_poll_round())
+    await gateway.arrived.wait()
+    older = asyncio.create_task(light.async_turn_on(brightness=102), eager_start=True)
+    coordinator.transport.discard_controls()
+    newer = asyncio.create_task(light.async_turn_on(brightness=204), eager_start=True)
+    try:
+        with pytest.raises(HomeAssistantError):
+            await older
+        assert light.brightness == 204
+        assert not newer.done()
+    finally:
+        gateway.release.set()
+        await asyncio.gather(blocker, newer)
+    assert light.brightness == 204
+    assert [r[5] for r in gateway.requests if r[1] == 6] == [80]
+
+
+async def test_cancelled_brightness_does_not_replace_remembered_level(gateway, lights):
+    coordinator, entities = lights
+    light = entities[0]
+    initial = light.brightness
+    gateway.block = True
+    gateway.arrived.clear()
+    blocker = asyncio.create_task(coordinator.async_poll_round())
+    await gateway.arrived.wait()
+    older = asyncio.create_task(light.async_turn_on(brightness=204), eager_start=True)
+    off = asyncio.create_task(light.async_turn_off(), eager_start=True)
+    await older  # Superseded before send.
+    gateway.release.set()
+    await asyncio.gather(blocker, off)
+    await light.async_turn_on()
+    assert light.brightness == initial
+    assert [r[5] for r in gateway.requests if r[1] == 6] == [0, 20]

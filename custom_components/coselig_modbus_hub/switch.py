@@ -17,6 +17,7 @@ from . import CoseligConfigEntry, ensure_parent_device
 from .const import DOMAIN
 from .coordinator import Coordinator
 from .models import Device
+from .optimistic import OptimisticValue, wait_controls
 from .profiles import OutputSpec
 from .protocol import ProtocolError
 from .r410_cover import occupied_relays
@@ -70,6 +71,7 @@ class CoseligSwitch(CoordinatorEntity[Coordinator], SwitchEntity):
         )
         self._optimistic_at = -1.0
         self._last_poll = -1.0
+        self._relay_state = OptimisticValue[bool | None](None)
         self._apply_poll()
 
     @property
@@ -88,7 +90,8 @@ class CoseligSwitch(CoordinatorEntity[Coordinator], SwitchEntity):
         ):
             return
         self._last_poll = state.poll_started
-        self._attr_is_on = state.coils[self.output.registers[0]]
+        self._relay_state.observe(state.coils[self.output.registers[0]])
+        self._attr_is_on = self._relay_state.value
 
     @callback
     def _handle_coordinator_update(self) -> None:
@@ -98,17 +101,23 @@ class CoseligSwitch(CoordinatorEntity[Coordinator], SwitchEntity):
     async def _set_state(self, value: bool) -> None:
         if not self.coordinator.can_control(self.device.slave):
             raise HomeAssistantError("Coselig device unavailable or scanning")
-        self._optimistic_at = asyncio.get_running_loop().time()
-        self._attr_is_on = value
-        self.async_write_ha_state()
         try:
-            await self.coordinator.async_command(
-                self.device.slave,
-                self.device.profile.command(
-                    self.device.slave, self.output.registers[0], value
+            slave = self.device.slave
+            items = await self.coordinator.async_queue_controls(
+                slave,
+                (
+                    (
+                        self.device.profile.command(
+                            slave, self.output.registers[0], value
+                        ),
+                        (slave, self.output.key, "relay"),
+                    ),
                 ),
-                (self.device.slave, self.output.key, "relay"),
             )
+            self._optimistic_at = asyncio.get_running_loop().time()
+            self._relay_state.stage(value, items[0], self._publish_optimistic)
+            self._publish_optimistic()
+            await wait_controls(items)
         except (
             ConnectionError,
             TimeoutError,
@@ -118,6 +127,10 @@ class CoseligSwitch(CoordinatorEntity[Coordinator], SwitchEntity):
             raise HomeAssistantError(
                 "Coselig command failed; awaiting device polling"
             ) from error
+
+    def _publish_optimistic(self) -> None:
+        self._attr_is_on = self._relay_state.value
+        self.async_write_ha_state()
 
     async def async_turn_on(self, **kwargs: Any) -> None:
         await self._set_state(True)

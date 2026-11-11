@@ -1118,10 +1118,10 @@ async def test_completed_controls_are_cleared_and_latest_wins_replaces_done_item
     transport._worker = asyncio.create_task(hold.wait())
     key = (1, "082a", "brightness")
     first = transport._enqueue(write(1, 0x082A, 20), False, key, "control")
-    first.set_result(None)
+    first.future.set_result(None)
     replacement = transport._enqueue(write(1, 0x082A, 80), False, key, "control")
-    assert transport._controls[key].future is replacement
-    replacement.set_result(None)
+    assert transport._controls[key] is replacement
+    replacement.future.set_result(None)
     transport.discard_controls()
     assert not transport._controls
     await transport.close()
@@ -1221,3 +1221,35 @@ async def test_close_cancels_active_future_during_error_cleanup(
     assert transport._worker is None
     assert transport._reader_task is None
     assert not transport.connected
+
+
+async def test_control_cancelled_while_connecting_is_never_sent(
+    gateway, transport, monkeypatch
+):
+    connecting = asyncio.Event()
+    release = asyncio.Event()
+    connect = transport.connect
+
+    async def blocked_connect():
+        connecting.set()
+        await release.wait()
+        await connect()
+
+    monkeypatch.setattr(transport, "connect", blocked_connect)
+    request = write(1, 0x082A, 80)
+    (item,) = await transport.enqueue_controls(((request, (1, "ch1", "brightness")),))
+    await connecting.wait()
+    item.future.cancel()
+    release.set()
+    await transport._idle.wait()
+    assert not item.sent
+    assert transport.statistics.successful_requests == 0
+    assert gateway.requests == []
+
+
+async def test_closed_transport_rejects_stateful_batch(transport):
+    await transport.close()
+    with pytest.raises(OfflineError, match="Transport closed"):
+        await transport.enqueue_controls(
+            ((write(1, 0x082A, 80), (1, "ch1", "brightness")),)
+        )

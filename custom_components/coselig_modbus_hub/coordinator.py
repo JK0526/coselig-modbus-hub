@@ -22,6 +22,7 @@ from .transport import (
     GatewayError,
     GatewayExchangeError,
     OfflineError,
+    Pending,
     Transport,
 )
 
@@ -246,6 +247,13 @@ class Coordinator(DataUpdateCoordinator[dict[int, DeviceState]]):
             and not self._stream_reset_pending
             and self.states[slave].available
         )
+
+    async def async_queue_controls(
+        self, slave: int, commands: tuple[tuple[bytes, CommandKey], ...]
+    ) -> tuple[Pending, ...]:
+        if not self.can_control(slave):
+            raise OfflineError("Device unavailable or scan in progress")
+        return await self.transport.enqueue_controls(commands)
 
     async def async_command(self, slave: int, request: bytes, key: CommandKey) -> None:
         if not self.can_control(slave):
