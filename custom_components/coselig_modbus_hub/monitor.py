@@ -67,6 +67,8 @@ def _snapshot(hub: Any) -> dict[str, Any]:
         "devices": devices,
         "s402_devices": [{"id": device_id} for device_id in hub.s402_ids],
         "entries": hub.transport.trace.snapshot(),
+        "passive_rx_enabled": hub.transport.passive_rx.enabled,
+        "passive_rx_entries": hub.transport.passive_rx.snapshot(),
     }
 
 
@@ -95,6 +97,8 @@ def _empty_snapshot() -> dict[str, Any]:
         "devices": [],
         "s402_devices": [],
         "entries": [],
+        "passive_rx_enabled": False,
+        "passive_rx_entries": [],
     }
 
 
@@ -139,9 +143,16 @@ def websocket_subscribe(
             previous = snapshot
 
     # Reading the ring buffer sends no Modbus requests. Timer belongs to the WS subscription.
-    connection.subscriptions[msg["id"]] = async_track_time_interval(
-        hass, publish, timedelta(milliseconds=500)
-    )
+    stop_timer = async_track_time_interval(hass, publish, timedelta(milliseconds=500))
+
+    @callback
+    def unsubscribe() -> None:
+        stop_timer()
+        hub = _hub(hass, msg["entry_id"])
+        if hub is not None and hub.transport.passive_rx.owner == id(connection):
+            hub.transport.passive_rx.clear()
+
+    connection.subscriptions[msg["id"]] = unsubscribe
     connection.send_result(msg["id"])
     publish()
 
@@ -200,12 +211,36 @@ def websocket_poll(
     )
 
 
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): f"{DOMAIN}/monitor/passive_rx",
+        vol.Required("entry_id"): str,
+        vol.Required("enabled"): vol.Boolean(),
+    }
+)
+@websocket_api.require_admin
+@callback
+def websocket_passive_rx(
+    hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]
+) -> None:
+    hub = _hub(hass, msg["entry_id"])
+    if hub is None:
+        connection.send_error(
+            msg["id"], "not_loaded", "Gateway integration is not loaded"
+        )
+        return
+    hub.transport.passive_rx.enabled = msg["enabled"]
+    hub.transport.passive_rx.owner = id(connection) if msg["enabled"] else None
+    connection.send_result(msg["id"], {"passive_rx_enabled": msg["enabled"]})
+
+
 async def async_register_monitor(hass: HomeAssistant) -> None:
     for handler in (
         websocket_list,
         websocket_subscribe,
         websocket_clear,
         websocket_poll,
+        websocket_passive_rx,
     ):
         websocket_api.async_register_command(hass, handler)
     await hass.http.async_register_static_paths(

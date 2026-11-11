@@ -23,7 +23,7 @@ from .protocol import (
     validate,
 )
 from .s402 import S402Event, is_s402_candidate, parse_s402_event
-from .trace import ProtocolTraceBuffer
+from .trace import PassiveRxBuffer, ProtocolTraceBuffer
 
 _LOGGER = logging.getLogger(__name__)
 CommandKey = tuple[int, str, str]
@@ -97,6 +97,7 @@ class Transport:
         self.action_capacity = action_capacity
         self.statistics = Statistics()
         self.trace = trace
+        self.passive_rx = PassiveRxBuffer()
         self.on_s402_event = on_s402_event
         self.on_connection_lost = on_connection_lost
         self.on_connected: Callable[[], None] | None = None
@@ -241,6 +242,13 @@ class Transport:
 
                 pending = self._pending_response
                 if pending is None or pending.done():
+                    if self.passive_rx.enabled:
+                        try:
+                            self.passive_rx.record(packet)
+                        except Exception:
+                            _LOGGER.debug(
+                                "Passive RX observation failed", exc_info=True
+                            )
                     _LOGGER.debug("Consumed RTU frame without a pending request")
                     continue
                 self._trace("RX", packet, source=self._pending_source)
@@ -498,6 +506,7 @@ class Transport:
 
     async def close(self) -> None:
         self._closed = True
+        self.passive_rx.clear()
         if self._worker is not None:
             self._worker.cancel()
             await asyncio.gather(self._worker, return_exceptions=True)

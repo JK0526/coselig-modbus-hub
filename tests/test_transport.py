@@ -1253,3 +1253,29 @@ async def test_closed_transport_rejects_stateful_batch(transport):
         await transport.enqueue_controls(
             ((write(1, 0x082A, 80), (1, "ch1", "brightness")),)
         )
+
+
+@pytest.mark.parametrize("mode", ["disabled", "enabled", "broken"])
+async def test_idle_rx_observation_keeps_s402_and_bus_unchanged(
+    gateway, transport, mode
+):
+    transport.passive_rx.enabled = mode != "disabled"
+    if mode == "broken":
+        transport.passive_rx.record = Mock(side_effect=RuntimeError("observer"))
+    arrived = asyncio.Event()
+    transport.on_s402_event = lambda _event: arrived.set()
+    await transport.connect()
+    packet = frame(bytes.fromhex("330302002a"))
+    await _push(gateway, packet + _s402_packet(7, 2))
+    await asyncio.wait_for(arrived.wait(), 1)
+    records = transport.passive_rx.snapshot()
+    if mode == "enabled":
+        assert len(records) == 1
+        assert records[0]["raw_hex"] == packet.hex(" ").upper()
+        assert records[0]["crc_valid"]
+    else:
+        assert not records
+    assert transport.statistics.successful_requests == 0
+    assert not gateway.requests
+    assert await transport.submit(read(51, 2), poll=True)
+    assert transport.passive_rx.snapshot() == records

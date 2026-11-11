@@ -168,3 +168,21 @@ async def test_trace_keeps_priority_and_latest_wins(gateway):
         assert len([e for e in trace.snapshot() if e["direction"] == "TX"]) == 3
     finally:
         await transport.close()
+
+
+def test_passive_rx_rate_limit_and_ring_capacity(monkeypatch):
+    from custom_components.coselig_modbus_hub import trace
+    from custom_components.coselig_modbus_hub.protocol import frame
+
+    now = 0.0
+    monkeypatch.setattr(trace, "monotonic", lambda: now)
+    buffer = trace.PassiveRxBuffer()
+    for slave in range(1, 202):
+        packet = frame(bytes([slave, 3, 2, 0, 42]))
+        buffer.record(packet)
+        for _ in range(20):
+            buffer.record(b"ignored")
+        now += 0.1
+    assert [item["slave"] for item in buffer.snapshot()] == list(range(2, 202))
+    buffer.record(packet[:-1] + bytes([packet[-1] ^ 1]))
+    assert buffer.snapshot()[-1]["crc_valid"] is False

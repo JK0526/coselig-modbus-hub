@@ -69,6 +69,7 @@ class CoseligModbusMonitor extends HTMLElement {
         </select>
         <button id="clear">清除封包</button><button id="pause">暫停畫面</button>
         <button id="poll-control" disabled>輪詢狀態載入中</button>
+        <label><input id="passive-rx-toggle" type="checkbox" disabled><span id="passive-rx-label">被動 RX 監聽</span></label>
         <label><input id="auto-scroll" type="checkbox" checked>自動捲動</label>
       </div>
       <div id="error" role="alert"></div>
@@ -82,6 +83,7 @@ class CoseligModbusMonitor extends HTMLElement {
             <dt>平均輪詢</dt><dd id="gateway-average">—</dd><dt>佇列</dt><dd id="gateway-queue">—</dd>
             <dt>佇列峰值</dt><dd id="gateway-queue-peak">—</dd>
           </dl></section>
+          <section class="card"><h2 id="passive-rx-title">未配對 RX</h2><pre id="passive-rx-entries" style="max-height: 12rem; overflow: auto"></pre></section>
           <section id="decoder-card" class="card decoder-card"><h2>封包解析</h2><dl id="decoder" class="decoder-grid"><dd class="empty">選取一筆封包以檢視內容。</dd></dl></section>
           <section class="card"><h2>設備狀態 <small id="device-summary">0 / 0 在線</small></h2><div id="devices" class="device-list"></div></section>
           <section class="card"><h2>通訊統計</h2><div id="stats-caption" class="section-caption">自本次啟動起累計</div><div id="stats-grid" class="stats-grid">
@@ -94,6 +96,7 @@ class CoseligModbusMonitor extends HTMLElement {
       this.shadowRoot.querySelector("#gateway").onchange = (event) => this._select(event.target.value);
       this.shadowRoot.querySelector("#slave-filter").onchange = () => this._filterChanged();
       this.shadowRoot.querySelector("#type-filter").onchange = () => this._filterChanged();
+      this.shadowRoot.querySelector("#passive-rx-toggle").onchange = (event) => this._togglePassiveRx(event.target.checked);
       this.shadowRoot.querySelector("#clear").onclick = () => this._clear();
       this.shadowRoot.querySelector("#poll-control").onclick = () => this._togglePolling();
       this.shadowRoot.querySelector("#pause").textContent = "暫停畫面";
@@ -172,6 +175,7 @@ class CoseligModbusMonitor extends HTMLElement {
       this._latest = null;
       this._pollControlPending = false;
       this._renderPollControl(null);
+      this._renderPassiveRx(null);
       this._resetHistory();
       this._transactions = [];
       this._selectedTransactionKey = null;
@@ -230,6 +234,38 @@ class CoseligModbusMonitor extends HTMLElement {
     } catch (error) { if (generation === this._generation) this._error(error); }
   }
 
+  async _togglePassiveRx(enabled) {
+    const generation = this._generation;
+    const toggle = this.shadowRoot.querySelector("#passive-rx-toggle");
+    toggle.disabled = true;
+    try {
+      const result = await this._hass.callWS({
+        type: "coselig_modbus_hub/monitor/passive_rx", entry_id: this._entry, enabled,
+      });
+      if (generation !== this._generation) return;
+      this._latest = { ...this._latest, ...result };
+    } catch (error) {
+      if (generation === this._generation) this._error(error);
+    } finally {
+      if (generation === this._generation) this._renderPassiveRx(this._latest);
+    }
+  }
+
+  _renderPassiveRx(snapshot) {
+    const zh = (this._hass?.locale?.language || "zh").toLowerCase().startsWith("zh");
+    const toggle = this.shadowRoot.querySelector("#passive-rx-toggle");
+    toggle.disabled = snapshot?.poll_interval == null;
+    toggle.checked = Boolean(snapshot?.passive_rx_enabled);
+    this.shadowRoot.querySelector("#passive-rx-label").textContent = zh ? "被動 RX 監聽" : "Passive RX listening";
+    this.shadowRoot.querySelector("#passive-rx-title").textContent = zh ? "未配對 RX" : "Unmatched RX";
+    this.shadowRoot.querySelector("#passive-rx-entries").textContent =
+      (snapshot?.passive_rx_entries || []).map((item) => {
+        const fc = item.function.toString(16).toUpperCase().padStart(2, "0");
+        const crc = item.crc_valid ? (zh ? "正確" : "valid") : (zh ? "錯誤" : "invalid");
+        return `${item.timestamp}  Slave ${item.slave}  FC${fc}  CRC ${crc}  ${item.raw_hex}`;
+      }).join("\n");
+  }
+
   async _togglePolling() {
     const snapshot = this._latest;
     const entry = this._entry;
@@ -283,6 +319,7 @@ class CoseligModbusMonitor extends HTMLElement {
     const sidebar = this.shadowRoot.querySelector("#sidebar");
     const sidebarScrollTop = sidebar.scrollTop;
     const snapshot = this._latest;
+    this._renderPassiveRx(snapshot);
     const coordinator = snapshot.coordinator || {};
     const stats = snapshot.statistics || {};
     this.shadowRoot.querySelector("#gateway-status").textContent = snapshot.connected ? "● 已連線" : "○ 已中斷";

@@ -18,6 +18,7 @@ from custom_components.coselig_modbus_hub.monitor import (
     async_register_monitor,
     websocket_clear,
     websocket_list,
+    websocket_passive_rx,
     websocket_poll,
     websocket_subscribe,
 )
@@ -44,6 +45,7 @@ async def ws(hass, hass_ws_client, entry, monitored_hub):
         websocket_subscribe,
         websocket_clear,
         websocket_poll,
+        websocket_passive_rx,
     ):
         websocket_api.async_register_command(hass, handler)
     client = await hass_ws_client(hass)
@@ -125,24 +127,39 @@ async def test_live_trace_clear_and_unsubscribe_without_requests(
     async_fire_time_changed(hass, dt_util.utcnow() + timedelta(seconds=1))
     await hass.async_block_till_done()
     assert (await ws.receive_json())["event"]["entries"] == []
-    await ws.send_json({"id": 4, "type": "unsubscribe_events", "subscription": 2})
+    await ws.send_json(
+        {
+            "id": 5,
+            "type": f"{DOMAIN}/monitor/passive_rx",
+            "entry_id": entry.entry_id,
+            "enabled": True,
+        }
+    )
     assert (await ws.receive_json())["success"]
+    assert monitored_hub.transport.passive_rx.enabled
+    await ws.send_json({"id": 6, "type": "unsubscribe_events", "subscription": 2})
+    assert (await ws.receive_json())["success"]
+    assert not monitored_hub.transport.passive_rx.enabled
     assert statistics.successful_requests == 15
     monitored_hub.transport.submit.assert_not_awaited()
 
 
-@pytest.mark.parametrize("command", ["subscribe", "clear", "poll"])
+@pytest.mark.parametrize("command", ["subscribe", "clear", "poll", "passive_rx"])
 async def test_unloaded_or_other_entry_rejected(ws, command):
     message = {"id": 1, "type": f"{DOMAIN}/monitor/{command}", "entry_id": "missing"}
     if command == "poll":
         message["paused"] = True
+    if command == "passive_rx":
+        message["enabled"] = True
     await ws.send_json(message)
     result = await ws.receive_json()
     assert not result["success"]
     assert result["error"]["code"] == "not_loaded"
 
 
-@pytest.mark.parametrize("command", ["list", "subscribe", "clear", "poll"])
+@pytest.mark.parametrize(
+    "command", ["list", "subscribe", "clear", "poll", "passive_rx"]
+)
 async def test_monitor_is_admin_only(
     hass, hass_ws_client, hass_read_only_access_token, command
 ):
@@ -152,6 +169,7 @@ async def test_monitor_is_admin_only(
         websocket_subscribe,
         websocket_clear,
         websocket_poll,
+        websocket_passive_rx,
     ):
         websocket_api.async_register_command(hass, handler)
     client = await hass_ws_client(hass, access_token=hass_read_only_access_token)
@@ -160,6 +178,8 @@ async def test_monitor_is_admin_only(
         message["entry_id"] = "any"
     if command == "poll":
         message["paused"] = True
+    if command == "passive_rx":
+        message["enabled"] = True
     await client.send_json(message)
     assert (await client.receive_json())["error"]["code"] == "unauthorized"
     await client.close()
@@ -264,7 +284,7 @@ async def test_register_versioned_static_panel(hass):
         "custom_components.coselig_modbus_hub.monitor.websocket_api.async_register_command"
     ) as register:
         await async_register_monitor(hass)
-    assert register.call_count == 4
+    assert register.call_count == 5
     paths = hass.http.async_register_static_paths.call_args.args[0]
     assert paths[0].url_path == f"/coselig_modbus_hub/monitor-{VERSION}.js"
     panel = hass.data[DATA_PANELS]["coselig-modbus-monitor"]
@@ -295,3 +315,21 @@ async def test_subscription_survives_runtime_reload_and_no_change(
     async_fire_time_changed(hass, dt_util.utcnow() + timedelta(seconds=3))
     await hass.async_block_till_done()
     assert (await ws.receive_json())["event"]["poll_interval"] == 2
+
+
+async def test_passive_rx_toggle_at_poll_zero(ws, entry, monitored_hub):
+    monitored_hub.coordinator.set_poll_interval(0)
+    options = dict(entry.options)
+    for request_id, enabled in enumerate((True, False), 1):
+        await ws.send_json(
+            {
+                "id": request_id,
+                "type": f"{DOMAIN}/monitor/passive_rx",
+                "entry_id": entry.entry_id,
+                "enabled": enabled,
+            }
+        )
+        assert (await ws.receive_json())["result"] == {"passive_rx_enabled": enabled}
+        assert monitored_hub.transport.passive_rx.enabled == enabled
+    assert entry.options == options
+    assert not monitored_hub.transport.connected

@@ -42,6 +42,7 @@ class Element {
 }
 
 const selectors = [
+  '#passive-rx-toggle', '#passive-rx-label', '#passive-rx-title', '#passive-rx-entries',
   '#gateway', '#slave-filter', '#type-filter', '#clear', '#pause', '#poll-control', '#auto-scroll',
   '#error', '#trace', '#gateway-status', '#gateway-poll', '#gateway-poll-state', '#gateway-devices',
   '#gateway-last', '#gateway-average', '#gateway-queue', '#gateway-queue-peak',
@@ -733,4 +734,25 @@ test('late subscription resolution after detach is unsubscribed', async () => {
   h.panel._connection.subscribeMessage = () => new Promise((resolve) => { finish = resolve; });
   const pending = h.panel._select('two'); h.panel.disconnectedCallback();
   finish(async () => { closed = true; }); await pending; assert.equal(closed, true);
+});
+
+test('passive RX stays outside transaction history and can be enabled with Poll=0', async () => {
+  const h = createHarness();
+  h.hass.locale = { language: 'en' };
+  await h.flush();
+  h.subscriptions[0].callback({
+    ...snapshot(), poll_interval: 0, passive_rx_enabled: false,
+    passive_rx_entries: [{
+      timestamp: '2026-10-14T06:32:08.214Z', slave: 99, function: 3,
+      crc_valid: false, raw_hex: '63 03 02 00 00 00 00',
+    }],
+  });
+  const node = (id) => h.panel.shadowRoot.querySelector(id);
+  assert.equal(node('#passive-rx-label').textContent, 'Passive RX listening');
+  assert.match(node('#passive-rx-entries').textContent, /Slave 99  FC03  CRC invalid/);
+  assert.doesNotMatch(node('#trace').textContent, /Slave 99/);
+  assert.equal(node('#passive-rx-toggle').disabled, false);
+  await h.panel._togglePassiveRx(true);
+  assert.equal(h.calls.at(-1).type, 'coselig_modbus_hub/monitor/passive_rx');
+  assert.equal(h.calls.at(-1).enabled, true);
 });

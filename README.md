@@ -138,6 +138,8 @@ Backend TraceBuffer 保留最多 **200 筆**，目前頁面另暫存最多 **100
 
 ## 更新
 
+測試版 **v1.6.5-beta.4** 新增 Monitor 被動 RX 監聽。請參考 [beta.4 發布說明](docs/v1.6.5-beta.4-release-notes.md)。
+
 測試版 **v1.6.5-beta.3** 新增掃描結果的「全部新增」與待辨識設備的批次型號確認。請參考 [beta.3 發布說明](docs/v1.6.5-beta.3-release-notes.md)。
 
 HACS 會依 GitHub Release 提供可更新版本。**v1.6.4** 是目前穩定版，可透過一般 HACS 更新檢查取得，無需啟用預發布版本更新。更新前請閱讀 [v1.6.4 Release Notes](docs/v1.6.4-release-notes.md)；Config Entry schema 維持 2.1，不需只為更新版本而刪除並重建整合。

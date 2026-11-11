@@ -5,7 +5,10 @@ from __future__ import annotations
 from collections import deque
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime, timedelta
+from time import monotonic
 from typing import Any
+
+from .protocol import crc16
 
 
 @dataclass(frozen=True)
@@ -56,3 +59,39 @@ class ProtocolTraceBuffer:
     def clear(self) -> None:
         self._entries.clear()
         self._last_timestamp = None
+
+
+class PassiveRxBuffer:
+    """Bounded observations of idle RX, sampled at most 20 times per second."""
+
+    def __init__(self) -> None:
+        self.enabled = False
+        self.owner: int | None = None
+        self._entries: deque[dict[str, Any]] = deque(maxlen=200)
+        self._next_record = 0.0
+
+    def record(self, packet: bytes) -> None:
+        now = monotonic()
+        if now < self._next_record:
+            return
+        self._next_record = now + 0.05
+        self._entries.append(
+            {
+                "direction": "UNMATCHED_RX",
+                "timestamp": datetime.now(UTC).isoformat(timespec="milliseconds"),
+                "raw_hex": packet.hex(" ").upper(),
+                "slave": packet[0],
+                "function": packet[1],
+                "crc_valid": crc16(packet[:-2])
+                == int.from_bytes(packet[-2:], "little"),
+            }
+        )
+
+    def snapshot(self) -> list[dict[str, Any]]:
+        return list(self._entries)
+
+    def clear(self) -> None:
+        self.enabled = False
+        self.owner = None
+        self._entries.clear()
+        self._next_record = 0.0
