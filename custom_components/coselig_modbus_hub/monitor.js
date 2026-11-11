@@ -44,14 +44,19 @@ class CoseligModbusMonitor extends HTMLElement {
         header{display:flex;align-items:center;gap:12px;flex:0 0 auto;margin-bottom:10px}.toolbar{display:flex;align-items:center;gap:8px;flex-wrap:wrap;flex:0 0 auto;margin-bottom:9px}
         button,select{font:inherit;min-height:36px;padding:7px 9px;border:1px solid var(--divider-color);border-radius:6px;color:var(--primary-text-color);background:var(--card-background-color)}
         button{cursor:pointer}.toolbar label{display:flex;align-items:center;gap:5px}.toolbar input{accent-color:var(--primary-color)}
+        .manual-panel{flex:0 0 auto;min-width:0;margin-bottom:8px}
+        .manual-fields{display:grid;grid-template-columns:minmax(0,1fr);gap:8px;margin-top:8px}
+        .manual-fields textarea{width:100%;min-width:0;resize:vertical;font:inherit}
+        .manual-fields label,.manual-actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+        #manual-preview{display:block;min-width:0;padding:6px;overflow-wrap:anywhere;font-family:var(--code-font-family,monospace);background:var(--secondary-background-color)}
         #error{color:var(--error-color);margin:0 0 8px;flex:0 0 auto}
         .layout{display:grid;grid-template-columns:minmax(0,1fr) minmax(320px,380px);grid-template-areas:"trace sidebar";gap:14px;flex:1;min-height:0;overflow:hidden}
         .card{min-width:0;padding:12px;border:1px solid var(--divider-color);border-radius:9px;background:var(--card-background-color)}
         .trace-panel{grid-area:trace;display:flex;flex-direction:column;min-height:0}.sidebar{grid-area:sidebar;display:grid;align-content:start;gap:10px;min-width:0;height:100%;min-height:0;overflow-y:auto;padding-right:2px}
-        .trace-list{flex:1;min-height:0;overflow:auto;min-width:0}.trace-entry{display:grid;grid-template-columns:88px 78px minmax(0,1fr) 64px;gap:8px;align-items:start;padding:4px 6px;border:1px solid transparent;border-radius:5px;line-height:1.45;font:12px/1.45 var(--code-font-family,monospace);cursor:pointer}
+        .trace-list{flex:1;min-height:0;overflow:auto;min-width:0}.trace-entry{display:grid;grid-template-columns:88px 78px 7ch minmax(0,1fr) 64px;gap:8px;align-items:start;padding:4px 6px;border:1px solid transparent;border-radius:5px;line-height:1.45;font:12px/1.45 var(--code-font-family,monospace);cursor:pointer}
         .trace-entry:hover{background:var(--secondary-background-color)}.trace-entry.selected{border-color:var(--primary-color);background:var(--secondary-background-color)}
         .trace-time,.trace-latency{color:var(--secondary-text-color);white-space:nowrap}.trace-tx,.trace-raw-tx{color:#42a5f5}.trace-rx,.trace-ok,.trace-raw-rx{color:#66bb6a}.trace-timeout{color:#ffb74d}.trace-crc-error,.trace-error{color:#ef5350}.trace-event,.trace-raw-event{color:#ba68c8}
-        .trace-raw{display:block;min-width:0;overflow-x:auto;white-space:pre}.trace-status{white-space:pre}.trace-latency{text-align:right}
+        .trace-raw{display:block;min-width:0;overflow-x:auto;white-space:pre}.trace-status{overflow-wrap:anywhere}.trace-source{color:var(--secondary-text-color);white-space:nowrap}.trace-latency{text-align:right}
         .metric-grid{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:5px 10px;margin:0;font-size:13px}.metric-grid dt{color:var(--secondary-text-color)}.metric-grid dd{margin:0;text-align:right;font-variant-numeric:tabular-nums}
         .stats-grid{display:grid;grid-template-columns:1fr 1fr;gap:2px 12px}.stat{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:4px 2px;border-bottom:1px solid var(--divider-color)}.stat span{color:var(--secondary-text-color);font-size:12px}.stat strong{font-size:14px;font-variant-numeric:tabular-nums}
         .section-caption{margin:-6px 0 8px;color:var(--secondary-text-color);font-size:11px}
@@ -59,7 +64,7 @@ class CoseligModbusMonitor extends HTMLElement {
         .trace-unmatched_rx{color:var(--accent-color,#ad70da)}
         .decoder-card{position:static}.decoder-grid{display:grid;grid-template-columns:minmax(100px,auto) minmax(0,1fr);gap:5px 9px;margin:0;max-height:min(38vh,360px);overflow-y:auto;font-size:13px}.decoder-grid dt{color:var(--secondary-text-color)}.decoder-grid dd{margin:0;overflow-wrap:anywhere}.empty{color:var(--secondary-text-color);padding:10px 4px}
         @media(max-width:900px){:host{height:auto;min-height:100vh;min-height:100dvh;overflow:visible}.layout{grid-template-columns:minmax(0,1fr);grid-template-areas:"sidebar" "trace";flex:none;min-height:auto;overflow:visible}.sidebar{height:auto;overflow:visible}.trace-list{flex:none;min-height:120px;max-height:55vh}.decoder-grid{max-height:40vh}}
-        @media(max-width:560px){:host{padding:12px}.trace-entry{grid-template-columns:70px 65px minmax(0,1fr);gap:5px;font-size:11px}.trace-latency{grid-column:3;text-align:left}.stats-grid{grid-template-columns:1fr 1fr}}
+        @media(max-width:560px){:host{padding:12px}.trace-entry{grid-template-columns:76px 62px 7ch minmax(0,1fr);gap:5px;font-size:11px}.trace-latency{grid-column:4;text-align:left}.stats-grid{grid-template-columns:1fr 1fr}}
       </style>
       <header><h1>Coselig Modbus 診斷監控</h1></header>
       <div class="toolbar">
@@ -73,12 +78,14 @@ class CoseligModbusMonitor extends HTMLElement {
         <label><input id="passive-rx-toggle" type="checkbox" disabled><span id="passive-rx-label">被動 RX 監聽</span></label>
         <label><input id="auto-scroll" type="checkbox" checked>自動捲動</label>
       </div>
-      <details><summary id="manual-title">手動指令</summary>
+      <details class="manual-panel"><summary id="manual-title">手動指令</summary>
+        <div class="manual-fields">
         <textarea id="manual-hex" maxlength="1024" aria-label="RTU HEX"></textarea>
         <label><input id="manual-crc" type="checkbox" checked><span id="manual-crc-label">自動附加 CRC16</span></label>
         <output id="manual-preview"></output>
-        <button id="manual-send" disabled>發送</button>
-        <small id="manual-warning">寫入會直接影響設備。</small>
+        <div class="manual-actions"><button id="manual-send" disabled>發送</button>
+          <small id="manual-warning">寫入會直接影響設備。</small></div>
+        </div>
       </details>
       <div id="error" role="alert"></div>
       <div class="layout">
@@ -468,10 +475,11 @@ class CoseligModbusMonitor extends HTMLElement {
         this._scrollDecoderIntoViewIfNeeded();
       };
       const timestamp = document.createElement("span"); timestamp.className = "trace-time"; timestamp.textContent = time;
-      const direction = document.createElement("span"); direction.className = `trace-status trace-${classKey}`; direction.textContent = status === "UNMATCHED_RX" ? this.shadowRoot.querySelector("#unmatched-rx-filter").textContent : status.padEnd(9);
-      if (entry.source === "MANUAL") direction.textContent += " · MANUAL";
+      const direction = document.createElement("span"); direction.className = `trace-status trace-${classKey}`; direction.textContent = status === "UNMATCHED_RX" ? this.shadowRoot.querySelector("#unmatched-rx-filter").textContent : status;
+      const source = document.createElement("span"); source.className = "trace-source";
+      source.textContent = entry.source === "MANUAL" ? "MANUAL" : "";
       const raw = document.createElement("span"); raw.className = `trace-raw${["TX", "RX", "EVENT"].includes(status) ? ` trace-raw-${status.toLowerCase()}` : ""}`; raw.textContent = entry.raw_hex || "";
-      row.append(timestamp, direction, raw);
+      row.append(timestamp, direction, source, raw);
       if (entry.latency_ms != null) { const latency = document.createElement("span"); latency.className = "trace-latency"; latency.textContent = `${Number(entry.latency_ms).toFixed(1)} ms`; row.append(latency); }
       list.append(row);
     }

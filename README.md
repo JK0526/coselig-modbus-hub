@@ -138,6 +138,8 @@ Backend TraceBuffer 保留最多 **200 筆**，目前頁面另暫存最多 **100
 
 ## 更新
 
+測試版 **v1.6.5-beta.7** 修正 Monitor 的 MANUAL 標籤、HEX 對齊及手動指令表單排版。請參考 [beta.7 發布說明](docs/v1.6.5-beta.7-release-notes.md)。
+
 測試版 **v1.6.5-beta.6** 加入管理員專用的 RTU HEX 手動指令。請參考 [beta.6 操作與限制](docs/v1.6.5-beta.6-release-notes.md)。
 
 測試版 **v1.6.5-beta.5** 將被動 RX 整合到 Monitor 原始封包時間軸，可用 Slave 或「未配對 RX」篩選，並點選查看 HEX、功能碼與 CRC。請參考 [beta.5 發布說明](docs/v1.6.5-beta.5-release-notes.md)。

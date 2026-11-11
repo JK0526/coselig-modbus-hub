@@ -151,8 +151,8 @@ test('TX, RX, OK and every error status receive presentation classes', async () 
     'trace-entry trace-tx', 'trace-entry trace-rx', 'trace-entry trace-ok',
     'trace-entry trace-timeout', 'trace-entry trace-crc-error', 'trace-entry trace-error',
   ]);
-  assert.equal(rows[0].children[2].className, 'trace-raw trace-raw-tx');
-  assert.equal(rows[1].children[2].className, 'trace-raw trace-raw-rx');
+  assert.equal(rows[0].children[3].className, 'trace-raw trace-raw-tx');
+  assert.equal(rows[1].children[3].className, 'trace-raw trace-raw-rx');
   assert.equal(rows[0].children[0].className, 'trace-time');
   h.panel.disconnectedCallback();
 });
@@ -307,7 +307,7 @@ test('S402 EVENT stays standalone between TX and RX and EVENT filter isolates it
   const rows = h.panel.shadowRoot.querySelector('#trace').children;
   assert.equal(rows.length, 1);
   assert.equal(rows[0].className, 'trace-entry trace-event');
-  assert.equal(rows[0].children[2].className, 'trace-raw trace-raw-event');
+  assert.equal(rows[0].children[3].className, 'trace-raw trace-raw-event');
   rows[0].onclick();
   const decoded = h.panel.shadowRoot.querySelector('#decoder').textContent;
   assert.match(decoded, /S402 Event/);
@@ -794,4 +794,26 @@ test('manual command previews low-byte-first CRC and sends original input', asyn
   await node('#manual-send').onclick();
   assert.equal(h.calls.at(-1).hex, '01 03\n08 2A 00 02');
   assert.equal(h.calls.at(-1).auto_crc, true);
+});
+
+test('manual statuses use a separate source cell and every packet uses the same HEX column', async () => {
+  const h = createHarness(); await h.flush();
+  const statuses = ['TX', 'RX', 'OK', 'ERROR'];
+  const manual = statuses.map((status) => entry(status, '01 03', null, 'MANUAL'));
+  h.subscriptions[0].callback({
+    ...snapshot([...manual, entry('EVENT', '01 06'), entry('TX', '02 03')]),
+    passive_rx_entries: [{ ...entry('UNMATCHED_RX', '03 03'), slave: 3 }],
+  });
+  const rows = h.panel.shadowRoot.querySelector('#trace').children;
+  assert.equal(rows.length, 7);
+  for (const [index, row] of rows.entries()) {
+    assert.match(row.children[1].className, /^trace-status /);
+    assert.equal(row.children[2].className, 'trace-source');
+    assert.equal(row.children[2].textContent, index < 4 ? 'MANUAL' : '');
+    assert.match(row.children[3].className, /^trace-raw/);
+    if (index < 4) assert.equal(row.children[1].textContent, statuses[index]);
+  }
+  assert.match(monitorSource, /grid-template-columns:88px 78px 7ch minmax\(0,1fr\) 64px/);
+  assert.match(monitorSource, /grid-template-columns:76px 62px 7ch minmax\(0,1fr\)/);
+  assert.match(monitorSource, /\.manual-fields\{display:grid;grid-template-columns:minmax\(0,1fr\)/);
 });
