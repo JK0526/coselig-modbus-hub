@@ -86,6 +86,39 @@ def write_single_register(slave: int, address: int, value: int) -> bytes:
     return _request(slave, 6, address, value)
 
 
+def manual_request(hex_text: str, auto_crc: bool) -> bytes:
+    """Parse one structurally verifiable unicast request."""
+    if len(hex_text) > 1024:
+        raise ValueError("HEX input is too long")
+    packet = bytes.fromhex(hex_text)
+    body = packet if auto_crc else packet[:-2]
+    if len(body) < 6:
+        raise ValueError("Incomplete RTU request")
+    slave, function, start, value = struct.unpack(">BBHH", body[:6])
+    if not 1 <= slave <= 247:
+        raise ValueError("Slave must be 1–247")
+    if function in (1, 2, 3, 4, 5, 6):
+        if len(body) != 6:
+            raise ValueError("Expected exactly one fixed-length RTU request")
+        if function < 5:
+            _read(slave, function, start, value)
+        elif function == 5 and value not in (0, 0xFF00):
+            raise ValueError("Invalid coil value")
+    elif function in (15, 16):
+        limit = 1968 if function == 15 else 123
+        byte_count = (value + 7) // 8 if function == 15 else value * 2
+        if (
+            not 1 <= value <= limit
+            or start + value > 0x10000
+            or len(body) != 7 + byte_count
+            or body[6] != byte_count
+        ):
+            raise ValueError("Invalid quantity, byte count or RTU length")
+    else:
+        raise ValueError(f"Unsupported function FC{function:02X}")
+    return frame(body) if auto_crc else packet
+
+
 def validate(request: bytes, response: bytes) -> bytes:
     if len(response) < 5:
         raise ProtocolError("Invalid length")
@@ -100,6 +133,9 @@ def validate(request: bytes, response: bytes) -> bytes:
     if request[1] in (5, 6):
         if response != request:
             raise ProtocolError("Write echo mismatch")
+    elif request[1] in (15, 16):
+        if len(response) != 8 or response[:6] != request[:6]:
+            raise ProtocolError("Multiple-write echo mismatch")
     elif request[1] in (1, 2, 3, 4):
         quantity = int.from_bytes(request[4:6], "big")
         count = (quantity + 7) // 8 if request[1] in (1, 2) else quantity * 2
@@ -113,9 +149,9 @@ def validate(request: bytes, response: bytes) -> bytes:
 async def receive(reader: asyncio.StreamReader) -> bytes:
     """Read one ADU from a TCP stream, including fragmented frames."""
     header = await reader.readexactly(2)
-    if header[1] in (0x81, 0x82, 0x83, 0x84, 0x85, 0x86):
+    if header[1] in (0x81, 0x82, 0x83, 0x84, 0x85, 0x86, 0x8F, 0x90):
         return header + await reader.readexactly(3)
-    if header[1] in (5, 6):
+    if header[1] in (5, 6, 15, 16):
         return header + await reader.readexactly(6)
     if header[1] in (1, 2, 3, 4):
         count = await reader.readexactly(1)

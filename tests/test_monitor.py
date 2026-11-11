@@ -18,6 +18,7 @@ from custom_components.coselig_modbus_hub.monitor import (
     async_register_monitor,
     websocket_clear,
     websocket_list,
+    websocket_manual,
     websocket_passive_rx,
     websocket_poll,
     websocket_subscribe,
@@ -42,6 +43,7 @@ async def ws(hass, hass_ws_client, entry, monitored_hub):
     assert await async_setup_component(hass, "websocket_api", {})
     for handler in (
         websocket_list,
+        websocket_manual,
         websocket_subscribe,
         websocket_clear,
         websocket_poll,
@@ -144,13 +146,17 @@ async def test_live_trace_clear_and_unsubscribe_without_requests(
     monitored_hub.transport.submit.assert_not_awaited()
 
 
-@pytest.mark.parametrize("command", ["subscribe", "clear", "poll", "passive_rx"])
+@pytest.mark.parametrize(
+    "command", ["subscribe", "clear", "poll", "passive_rx", "manual"]
+)
 async def test_unloaded_or_other_entry_rejected(ws, command):
     message = {"id": 1, "type": f"{DOMAIN}/monitor/{command}", "entry_id": "missing"}
     if command == "poll":
         message["paused"] = True
     if command == "passive_rx":
         message["enabled"] = True
+    if command == "manual":
+        message.update(hex="01 03 08 2A 00 02", auto_crc=True)
     await ws.send_json(message)
     result = await ws.receive_json()
     assert not result["success"]
@@ -158,7 +164,7 @@ async def test_unloaded_or_other_entry_rejected(ws, command):
 
 
 @pytest.mark.parametrize(
-    "command", ["list", "subscribe", "clear", "poll", "passive_rx"]
+    "command", ["list", "subscribe", "clear", "poll", "passive_rx", "manual"]
 )
 async def test_monitor_is_admin_only(
     hass, hass_ws_client, hass_read_only_access_token, command
@@ -166,6 +172,7 @@ async def test_monitor_is_admin_only(
     assert await async_setup_component(hass, "websocket_api", {})
     for handler in (
         websocket_list,
+        websocket_manual,
         websocket_subscribe,
         websocket_clear,
         websocket_poll,
@@ -180,6 +187,8 @@ async def test_monitor_is_admin_only(
         message["paused"] = True
     if command == "passive_rx":
         message["enabled"] = True
+    if command == "manual":
+        message.update(hex="01 03 08 2A 00 02", auto_crc=True)
     await client.send_json(message)
     assert (await client.receive_json())["error"]["code"] == "unauthorized"
     await client.close()
@@ -284,7 +293,7 @@ async def test_register_versioned_static_panel(hass):
         "custom_components.coselig_modbus_hub.monitor.websocket_api.async_register_command"
     ) as register:
         await async_register_monitor(hass)
-    assert register.call_count == 5
+    assert register.call_count == 6
     paths = hass.http.async_register_static_paths.call_args.args[0]
     assert paths[0].url_path == f"/coselig_modbus_hub/monitor-{VERSION}.js"
     panel = hass.data[DATA_PANELS]["coselig-modbus-monitor"]
@@ -333,3 +342,34 @@ async def test_passive_rx_toggle_at_poll_zero(ws, entry, monitored_hub):
         assert monitored_hub.transport.passive_rx.enabled == enabled
     assert entry.options == options
     assert not monitored_hub.transport.connected
+
+
+async def test_manual_websocket_at_poll_zero_and_error_results(
+    ws, entry, monitored_hub
+):
+    coordinator = monitored_hub.coordinator
+    coordinator.set_poll_interval(0)
+    coordinator.gateway_available = True
+    submit = AsyncMock(return_value=b"response")
+    monitored_hub.transport.submit_manual = submit
+    request = {
+        "type": f"{DOMAIN}/monitor/manual",
+        "entry_id": entry.entry_id,
+        "hex": "01 03 08 2A 00 02",
+        "auto_crc": True,
+    }
+    await ws.send_json({"id": 1, **request})
+    assert (await ws.receive_json())["success"]
+    submit.assert_awaited_once_with(bytes.fromhex("01 03 08 2A 00 02 E7 A3"))
+    coordinator.scanning = True
+    await ws.send_json({"id": 2, **request})
+    assert (await ws.receive_json())["error"]["code"] == "unavailable"
+    coordinator.scanning = False
+    await ws.send_json({"id": 3, **request, "hex": "G0"})
+    assert (await ws.receive_json())["error"]["code"] == "manual_failed"
+    submit.side_effect = TimeoutError
+    await ws.send_json({"id": 4, **request})
+    assert (await ws.receive_json())["error"]["code"] == "timeout"
+    monitored_hub.stopping = True
+    await ws.send_json({"id": 5, **request})
+    assert (await ws.receive_json())["error"]["code"] == "not_loaded"

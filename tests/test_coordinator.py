@@ -515,3 +515,20 @@ async def test_soft_reset_escalates_to_offline_if_tcp_cannot_reconnect(
     assert not any(state.available for state in coordinator.states.values())
     assert all(state.consecutive_failures == 0 for state in coordinator.states.values())
     assert gateway.requests.count(request) == 1
+
+
+async def test_manual_admission_does_not_count_as_slave_failure(gateway, coordinator):
+    await coordinator.async_poll_round()
+    gateway.arrived.clear()
+    gateway.block = True
+    manual = asyncio.create_task(
+        coordinator.transport.submit_manual(write(1, 0x082A, 20))
+    )
+    await gateway.arrived.wait()
+    before = len(gateway.requests)
+    await coordinator.async_poll_round()
+    assert len(gateway.requests) == before
+    assert coordinator.states[1].consecutive_failures == 0
+    assert coordinator.gateway_available
+    gateway.release.set()
+    await manual

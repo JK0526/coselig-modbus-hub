@@ -13,6 +13,7 @@ from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.event import async_track_time_interval
 
 from .const import DOMAIN, VERSION
+from .protocol import ProtocolError, manual_request
 
 
 def _hub(hass: HomeAssistant, entry_id: str) -> Any:
@@ -235,6 +236,41 @@ def websocket_passive_rx(
     connection.send_result(msg["id"], {"passive_rx_enabled": msg["enabled"]})
 
 
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): f"{DOMAIN}/monitor/manual",
+        vol.Required("entry_id"): str,
+        vol.Required("hex"): str,
+        vol.Required("auto_crc"): vol.Boolean(),
+    }
+)
+@websocket_api.require_admin
+@websocket_api.async_response
+async def websocket_manual(
+    hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]
+) -> None:
+    hub = _hub(hass, msg["entry_id"])
+    if hub is None or hub.stopping:
+        connection.send_error(
+            msg["id"], "not_loaded", "Gateway integration is not loaded"
+        )
+        return
+    if hub.coordinator.scanning or not hub.coordinator.gateway_available:
+        connection.send_error(
+            msg["id"], "unavailable", "Gateway offline or scan in progress"
+        )
+        return
+    try:
+        request = manual_request(msg["hex"], msg["auto_crc"])
+        await hub.transport.submit_manual(request)
+    except TimeoutError:
+        connection.send_error(msg["id"], "timeout", "Manual operation timed out")
+    except (ConnectionError, ProtocolError, ValueError) as error:
+        connection.send_error(msg["id"], "manual_failed", str(error))
+    else:
+        connection.send_result(msg["id"])
+
+
 async def async_register_monitor(hass: HomeAssistant) -> None:
     for handler in (
         websocket_list,
@@ -242,6 +278,7 @@ async def async_register_monitor(hass: HomeAssistant) -> None:
         websocket_clear,
         websocket_poll,
         websocket_passive_rx,
+        websocket_manual,
     ):
         websocket_api.async_register_command(hass, handler)
     await hass.http.async_register_static_paths(

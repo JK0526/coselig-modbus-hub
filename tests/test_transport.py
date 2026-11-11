@@ -1279,3 +1279,110 @@ async def test_idle_rx_observation_keeps_s402_and_bus_unchanged(
     assert not gateway.requests
     assert await transport.submit(read(51, 2), poll=True)
     assert transport.passive_rx.snapshot() == records
+
+
+async def test_manual_drains_accepted_control_and_rejects_new_admission(
+    gateway, transport
+):
+    await transport.connect()
+    gateway.block = True
+    first = asyncio.create_task(transport.submit_action(write(51, 0x082A, 20)))
+    await gateway.arrived.wait()
+    manual = asyncio.create_task(transport.submit_manual(read(51, 2)))
+    await asyncio.sleep(0)
+    with pytest.raises(OfflineError, match="maintenance"):
+        await transport.submit(read(51, 2), poll=True)
+    with pytest.raises(OfflineError, match="maintenance"):
+        await transport.enqueue_controls(((write(51, 0x082A, 30), (51, "a", "write")),))
+    with pytest.raises(OfflineError, match="reserved"):
+        await transport.submit_manual(read(51, 2))
+    gateway.release.set()
+    assert await first
+    assert await manual
+    assert gateway.requests == [write(51, 0x082A, 20), read(51, 2)]
+    assert await transport.submit_action(write(51, 0x082A, 40))
+
+
+async def test_cancelled_manual_waiter_holds_isolation_until_worker_finishes(
+    gateway, transport
+):
+    await transport.connect()
+    gateway.block = True
+    manual = asyncio.create_task(transport.submit_manual(read(51, 2)))
+    await gateway.arrived.wait()
+    manual.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await manual
+    with pytest.raises(OfflineError, match="maintenance"):
+        await transport.submit_action(write(51, 0x082A, 20))
+    gateway.release.set()
+    await asyncio.wait_for(transport._idle.wait(), 1)
+    assert await transport.submit_action(write(51, 0x082A, 20))
+
+
+@pytest.mark.parametrize(
+    ("mode", "error"),
+    [("timeout", TimeoutError), ("crc", CRCError), ("disconnect", GatewayError)],
+)
+async def test_manual_failure_does_not_replay_or_hold_maintenance(
+    gateway, transport, mode, error
+):
+    with pytest.raises(OfflineError, match="offline"):
+        await transport.submit_manual(read(51, 2))
+    await transport.connect()
+    gateway.modes[51] = mode
+    with pytest.raises(error):
+        await transport.submit_manual(read(51, 2))
+    assert gateway.requests == [read(51, 2)]
+    assert not transport._maintenance
+    assert not transport.connected
+
+
+async def test_manual_rejects_scan_and_unload_cancels_active_manual(gateway, transport):
+    await transport.connect()
+    async with transport.exclusive():
+        with pytest.raises(OfflineError, match="scanning"):
+            await transport.submit_manual(read(51, 2))
+    gateway.block = True
+    manual = asyncio.create_task(transport.submit_manual(read(51, 2)))
+    await gateway.arrived.wait()
+    with pytest.raises(OfflineError, match="maintenance"):
+        async with transport.exclusive():
+            pytest.fail("Scan entered during manual transaction")
+    await transport.close()
+    with pytest.raises(asyncio.CancelledError):
+        await manual
+    assert not transport._maintenance
+    assert not transport.connected
+
+
+async def test_manual_draining_rejects_if_prior_transaction_loses_connection(
+    gateway, transport
+):
+    await transport.connect()
+    gateway.block = True
+    gateway.modes[51] = "disconnect"
+    accepted = asyncio.create_task(transport.submit(read(51, 2)))
+    await gateway.arrived.wait()
+    manual = asyncio.create_task(transport.submit_manual(read(52, 2)))
+    await asyncio.sleep(0)
+    gateway.release.set()
+    with pytest.raises(GatewayError):
+        await accepted
+    with pytest.raises(OfflineError, match="while draining"):
+        await manual
+    assert gateway.requests == [read(51, 2)]
+
+
+async def test_manual_bad_crc_is_sent_verbatim_and_s402_signature_is_rejected(
+    gateway, transport
+):
+    await transport.connect()
+    with pytest.raises(ValueError, match="S402"):
+        await transport.submit_manual(_s402_packet(7, 2))
+    gateway.modes[51] = "timeout"
+    valid = read(51, 2)
+    bad = valid[:-1] + bytes([valid[-1] ^ 1])
+    with pytest.raises(TimeoutError):
+        await transport.submit_manual(bad)
+    assert gateway.requests == [bad]

@@ -42,6 +42,7 @@ class Element {
 }
 
 const selectors = [
+  '#manual-title', '#manual-crc-label', '#manual-send', '#manual-warning', '#manual-hex', '#manual-crc', '#manual-preview',
   '#passive-rx-toggle', '#passive-rx-label', '#unmatched-rx-filter',
   '#gateway', '#slave-filter', '#type-filter', '#clear', '#pause', '#poll-control', '#auto-scroll',
   '#error', '#trace', '#gateway-status', '#gateway-poll', '#gateway-poll-state', '#gateway-devices',
@@ -780,4 +781,17 @@ test('unmatched RX is chronological, stable at ties, deduplicated and filterable
   node('#type-filter').value = 'UNMATCHED_RX';
   node('#type-filter').onchange();
   assert.deepEqual(rows(), ['trace-unmatched_rx']);
+});
+
+test('manual command previews low-byte-first CRC and sends original input', async () => {
+  const h = createHarness(); await h.flush();
+  h.subscriptions[0].callback(snapshot());
+  const node = (id) => h.panel.shadowRoot.querySelector(id);
+  node('#manual-hex').value = '01 03\n08 2A 00 02';
+  node('#manual-crc').checked = true;
+  node('#manual-hex').oninput();
+  assert.equal(node('#manual-preview').textContent, '01 03 08 2A 00 02 E7 A3');
+  await node('#manual-send').onclick();
+  assert.equal(h.calls.at(-1).hex, '01 03\n08 2A 00 02');
+  assert.equal(h.calls.at(-1).auto_crc, true);
 });

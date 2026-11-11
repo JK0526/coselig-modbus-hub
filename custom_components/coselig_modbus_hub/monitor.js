@@ -73,6 +73,13 @@ class CoseligModbusMonitor extends HTMLElement {
         <label><input id="passive-rx-toggle" type="checkbox" disabled><span id="passive-rx-label">被動 RX 監聽</span></label>
         <label><input id="auto-scroll" type="checkbox" checked>自動捲動</label>
       </div>
+      <details><summary id="manual-title">手動指令</summary>
+        <textarea id="manual-hex" maxlength="1024" aria-label="RTU HEX"></textarea>
+        <label><input id="manual-crc" type="checkbox" checked><span id="manual-crc-label">自動附加 CRC16</span></label>
+        <output id="manual-preview"></output>
+        <button id="manual-send" disabled>發送</button>
+        <small id="manual-warning">寫入會直接影響設備。</small>
+      </details>
       <div id="error" role="alert"></div>
       <div class="layout">
         <section class="card trace-panel"><h2>原始封包</h2><div id="trace" class="trace-list" aria-label="Modbus Raw HEX"></div></section>
@@ -93,6 +100,9 @@ class CoseligModbusMonitor extends HTMLElement {
           </div></section>
         </aside>
       </div>`;
+      this.shadowRoot.querySelector("#manual-hex").oninput = () => this._renderManual();
+      this.shadowRoot.querySelector("#manual-crc").onchange = () => this._renderManual();
+      this.shadowRoot.querySelector("#manual-send").onclick = () => this._sendManual();
       this.shadowRoot.querySelector("#gateway").onchange = (event) => this._select(event.target.value);
       this.shadowRoot.querySelector("#slave-filter").onchange = () => this._filterChanged();
       this.shadowRoot.querySelector("#type-filter").onchange = () => this._filterChanged();
@@ -251,6 +261,48 @@ class CoseligModbusMonitor extends HTMLElement {
     }
   }
 
+  _renderManual() {
+    const get = (id) => this.shadowRoot.querySelector(id);
+    const zh = (this._hass?.locale?.language || this._hass?.language || "zh").toLowerCase().startsWith("zh");
+    get("#manual-title").textContent = zh ? "手動指令" : "Manual command";
+    get("#manual-crc-label").textContent = zh ? "自動附加 CRC16" : "Append CRC16";
+    get("#manual-send").textContent = zh ? "發送" : "Send";
+    get("#manual-warning").textContent = zh ? "寫入會直接影響設備。" : "Writes directly affect devices.";
+    const input = (get("#manual-hex").value || "").trim();
+    const valid = /^(?:[a-f0-9]{2}\s*)+$/i.test(input);
+    const bytes = valid ? input.match(/[a-f0-9]{2}/gi).map((pair) => parseInt(pair, 16)) : [];
+    if (bytes.length && get("#manual-crc").checked) {
+      let crc = 0xffff;
+      for (const byte of bytes) {
+        crc ^= byte;
+        for (let bit = 0; bit < 8; bit++) crc = (crc >>> 1) ^ ((crc & 1) ? 0xa001 : 0);
+      }
+      bytes.push(crc & 255, crc >>> 8);
+    }
+    get("#manual-preview").textContent = bytes.map((byte) => byte.toString(16).padStart(2, "0").toUpperCase()).join(" ");
+    get("#manual-send").disabled = !valid || !this._latest?.connected || Boolean(this._manualPending);
+  }
+
+  async _sendManual() {
+    const get = (id) => this.shadowRoot.querySelector(id);
+    if (get("#manual-send").disabled || this._manualPending) return;
+    const generation = this._generation;
+    this._manualPending = true;
+    this._renderManual();
+    try {
+      await this._hass.callWS({
+        type: "coselig_modbus_hub/monitor/manual", entry_id: this._entry,
+        hex: get("#manual-hex").value, auto_crc: get("#manual-crc").checked,
+      });
+      if (generation === this._generation) get("#error").textContent = "";
+    } catch (error) {
+      if (generation === this._generation) this._error(error);
+    } finally {
+      this._manualPending = false;
+      if (this.isConnected) this._renderManual();
+    }
+  }
+
   _renderPassiveRx(snapshot) {
     const zh = (this._hass?.locale?.language || "zh").toLowerCase().startsWith("zh");
     const toggle = this.shadowRoot.querySelector("#passive-rx-toggle");
@@ -314,6 +366,7 @@ class CoseligModbusMonitor extends HTMLElement {
     const sidebarScrollTop = sidebar.scrollTop;
     const snapshot = this._latest;
     this._renderPassiveRx(snapshot);
+    this._renderManual();
     const coordinator = snapshot.coordinator || {};
     const stats = snapshot.statistics || {};
     this.shadowRoot.querySelector("#gateway-status").textContent = snapshot.connected ? "● 已連線" : "○ 已中斷";
@@ -416,6 +469,7 @@ class CoseligModbusMonitor extends HTMLElement {
       };
       const timestamp = document.createElement("span"); timestamp.className = "trace-time"; timestamp.textContent = time;
       const direction = document.createElement("span"); direction.className = `trace-status trace-${classKey}`; direction.textContent = status === "UNMATCHED_RX" ? this.shadowRoot.querySelector("#unmatched-rx-filter").textContent : status.padEnd(9);
+      if (entry.source === "MANUAL") direction.textContent += " · MANUAL";
       const raw = document.createElement("span"); raw.className = `trace-raw${["TX", "RX", "EVENT"].includes(status) ? ` trace-raw-${status.toLowerCase()}` : ""}`; raw.textContent = entry.raw_hex || "";
       row.append(timestamp, direction, raw);
       if (entry.latency_ms != null) { const latency = document.createElement("span"); latency.className = "trace-latency"; latency.textContent = `${Number(entry.latency_ms).toFixed(1)} ms`; row.append(latency); }
@@ -579,12 +633,14 @@ class CoseligModbusMonitor extends HTMLElement {
   static decodeRequest(bytes, devices = [], source = "") {
     if (!Array.isArray(bytes) || bytes.length < 6) return [];
     const slave = bytes[0], fn = bytes[1], deviceName = this._deviceName(slave, devices);
-    const result = [["Direction", "Request"], ["Slave", `${slave} (0x${slave.toString(16).padStart(2, "0").toUpperCase()})`], ["Device", deviceName], ["Function", `FC${String(fn).padStart(2, "0")} · ${FUNCTION_NAMES[fn] || "Unknown"}`]];
+    const result = [["Direction", "Request"], ["Slave", `${slave} (0x${slave.toString(16).padStart(2, "0").toUpperCase()})`], ["Device", deviceName], ["Function", `FC${fn.toString(16).toUpperCase().padStart(2, "0")} · ${FUNCTION_NAMES[fn] || "Unknown"}`]];
     if (fn >= 1 && fn <= 4) {
       const start = bytes[2] * 256 + bytes[3], count = bytes[4] * 256 + bytes[5];
       result.push(["Start", `0x${start.toString(16).padStart(4, "0").toUpperCase()} (${start})`], ["Count", String(count)]);
       const purpose = this._purpose(fn, start, count, devices.find((item) => item.slave === slave), source);
       if (purpose !== "—") result.push(["Purpose", purpose]);
+    } else if (fn === 15 || fn === 16) {
+      result.push(["Start", String(bytes[2] * 256 + bytes[3])], ["Count", String(bytes[4] * 256 + bytes[5])]);
     } else if (fn === 5 || fn === 6) {
       const address = bytes[2] * 256 + bytes[3], value = bytes[4] * 256 + bytes[5];
       if (fn === 5) {
@@ -614,10 +670,10 @@ class CoseligModbusMonitor extends HTMLElement {
     const result = [["Direction", "Response"], ["Slave", `${slave} (0x${slave.toString(16).padStart(2, "0").toUpperCase()})`], ["Device", this._deviceName(slave, devices)]];
     if (fn & 0x80) {
       const exception = bytes[2];
-      result.push(["Function", `Exception Response · FC${String(fn & 0x7f).padStart(2, "0")}`], ["Exception Code", `0x${exception.toString(16).padStart(2, "0").toUpperCase()}`], ["Meaning", EXCEPTION_MEANINGS[exception] || "Unknown exception"]);
+      result.push(["Function", `Exception Response · FC${(fn & 0x7f).toString(16).toUpperCase().padStart(2, "0")}`], ["Exception Code", `0x${exception.toString(16).padStart(2, "0").toUpperCase()}`], ["Meaning", EXCEPTION_MEANINGS[exception] || "Unknown exception"]);
       return result;
     }
-    result.push(["Function", `FC${String(fn).padStart(2, "0")} · ${FUNCTION_NAMES[fn] || "Unknown"}`]);
+    result.push(["Function", `FC${fn.toString(16).toUpperCase().padStart(2, "0")} · ${FUNCTION_NAMES[fn] || "Unknown"}`]);
     if ([1, 2].includes(fn) && requestBytes?.length >= 6) {
       const count = requestBytes[4] * 256 + requestBytes[5];
       const start = requestBytes[2] * 256 + requestBytes[3];
@@ -637,6 +693,8 @@ class CoseligModbusMonitor extends HTMLElement {
         const address = start + index;
         result.push([`0x${address.toString(16).padStart(4, "0").toUpperCase()} ${this._registerName(address, device)}`.trim(), `0x${raw.toString(16).padStart(4, "0").toUpperCase()} · ${raw & 0xff}`]);
       }
+    } else if ((fn === 15 || fn === 16) && bytes.length === 8) {
+      result.push(["Start", String(bytes[2] * 256 + bytes[3])], ["Count", String(bytes[4] * 256 + bytes[5])]);
     } else if ((fn === 5 || fn === 6) && bytes.length >= 8) {
       const address = bytes[2] * 256 + bytes[3], value = bytes[4] * 256 + bytes[5];
       if (fn === 5) result.push([device?.model === "r410" && address < 4 ? `Relay ${address + 1}` : `Coil ${address}`, value === 0xff00 ? "ON" : value === 0 ? "OFF" : `0x${value.toString(16).toUpperCase()}`]);

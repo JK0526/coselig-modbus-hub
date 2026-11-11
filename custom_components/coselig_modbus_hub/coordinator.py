@@ -21,6 +21,7 @@ from .transport import (
     CommandKey,
     GatewayError,
     GatewayExchangeError,
+    MaintenanceError,
     OfflineError,
     Pending,
     Transport,
@@ -206,6 +207,8 @@ class Coordinator(DataUpdateCoordinator[dict[int, DeviceState]]):
                         spec.request(device.slave), poll=True
                     )
                     device.profile.decode(spec, response, data)
+            except MaintenanceError:
+                return None
             except GatewayError as error:
                 self.gateway_lost()
                 if isinstance(error, GatewayExchangeError):

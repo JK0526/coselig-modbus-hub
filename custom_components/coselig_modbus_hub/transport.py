@@ -41,6 +41,10 @@ class OfflineError(ConnectionError):
     """A control was rejected or discarded; it will never be replayed."""
 
 
+class MaintenanceError(OfflineError):
+    """A new request was refused during manual maintenance."""
+
+
 @dataclass
 class Statistics:
     successful_requests: int = 0
@@ -117,6 +121,7 @@ class Transport:
         self._idle = asyncio.Event()
         self._idle.set()
         self._gate = asyncio.Lock()
+        self._maintenance = False
         self._closed = False
         self._connections = 0
         self._disconnecting = False
@@ -326,6 +331,36 @@ class Transport:
             item = self._enqueue(request, False, None, "control", action=True)
         return await item.future
 
+    async def submit_manual(self, request: bytes) -> bytes | None:
+        """Reserve admission before draining the existing Worker."""
+        if is_s402_candidate(request):
+            raise ValueError("RTU request overlaps the reserved S402 event signature")
+        if self._maintenance or self._gate.locked():
+            raise MaintenanceError("Bus is reserved or scanning")
+        if self._closed or not self.connected:
+            raise OfflineError("Gateway is offline")
+        self._maintenance = True
+        writer = self._writer
+        item = None
+        try:
+            async with asyncio.timeout(max(1.0, self.timeout)):
+                await self._idle.wait()
+            if self._closed or not self.connected or self._writer is not writer:
+                raise OfflineError("Gateway disconnected while draining")
+            item = self._enqueue(request, False, None, "MANUAL", action=True)
+            return await asyncio.shield(item.future)
+        finally:
+            if item is not None and not item.future.done():
+                # A cancelled UI waiter cannot end isolation before worker cleanup.
+                item.future.add_done_callback(self._finish_manual)
+            else:
+                self._maintenance = False
+
+    def _finish_manual(self, future: asyncio.Future[bytes | None]) -> None:
+        self._maintenance = False
+        if not future.cancelled():
+            future.exception()
+
     async def enqueue_controls(
         self, commands: tuple[tuple[bytes, CommandKey], ...]
     ) -> tuple[Pending, ...]:
@@ -351,6 +386,8 @@ class Transport:
         *,
         action: bool = False,
     ) -> Pending:
+        if self._maintenance and source != "MANUAL":
+            raise MaintenanceError("Manual maintenance is active")
         if self._closed:
             raise OfflineError("Transport closed")
         future = asyncio.get_running_loop().create_future()
@@ -384,6 +421,8 @@ class Transport:
     async def exclusive(self) -> AsyncIterator[None]:
         """Drain earlier transactions and keep scan traffic alone on the bus."""
         async with self._gate:
+            if self._maintenance:
+                raise MaintenanceError("Manual maintenance is active")
             await self._idle.wait()
             yield
 
@@ -405,7 +444,8 @@ class Transport:
     async def _exchange(
         self, request: bytes, source: str, item: Pending | None = None
     ) -> bytes | None:
-        await self.connect()
+        if source != "MANUAL":
+            await self.connect()
         if item is not None and item.future.cancelled():
             return None
         started = asyncio.get_running_loop().time()

@@ -94,3 +94,58 @@ async def test_receive_invalid(packet):
 def test_unsupported_function():
     with pytest.raises(ProtocolError, match="Unsupported function"):
         validate(frame(bytes([1, 7, 0, 0])), frame(bytes([1, 7, 0, 0])))
+
+
+def test_manual_request_validates_single_frame_and_preserves_crc():
+    from custom_components.coselig_modbus_hub.protocol import frame, manual_request
+
+    for body in (
+        "01 03 08 2A 00 02",
+        "01 06 08 2A FF FF",
+        "01 10 08 2A 00 02 04 00 01 00 02",
+        "01 0F 00 00 00 02 01 03",
+    ):
+        packet = frame(bytes.fromhex(body))
+        assert manual_request(body, True) == packet
+        assert manual_request(packet.hex(), False) == packet
+        corrupt = packet[:-1] + bytes([packet[-1] ^ 1])
+        assert manual_request(corrupt.hex(), False) == corrupt
+    for invalid in (
+        "G0",
+        "01",
+        "00 03 00 00 00 01",
+        "01 05 00 00 01 00",
+        "01 11 00 00 00 01",
+        "01 10 00 00 00 02 02 00 01",
+        "01 03 00 00 00 01 01 03 00 00 00 01",
+        " " * 1025,
+    ):
+        with pytest.raises(ValueError):
+            manual_request(invalid, True)
+
+
+async def test_multiple_write_response_validation():
+    import asyncio
+
+    from custom_components.coselig_modbus_hub.protocol import (
+        DeviceException,
+        ProtocolError,
+        frame,
+        manual_request,
+        receive,
+        validate,
+    )
+
+    request = manual_request("01 10 00 00 00 02 04 00 01 00 02", True)
+    for raw in ("01 10 00 00 00 02", "01 90 03"):
+        reader = asyncio.StreamReader()
+        packet = frame(bytes.fromhex(raw))
+        reader.feed_data(packet)
+        assert await receive(reader) == packet
+        if raw.startswith("01 90"):
+            with pytest.raises(DeviceException):
+                validate(request, packet)
+        else:
+            assert validate(request, packet) == packet
+    with pytest.raises(ProtocolError, match="echo"):
+        validate(request, frame(bytes.fromhex("01 10 00 00 00 03")))
