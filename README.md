@@ -138,19 +138,12 @@ Backend TraceBuffer 保留最多 **200 筆**，目前頁面另暫存最多 **100
 
 ## 更新
 
-測試版 **v1.6.5-beta.7** 修正 Monitor 的 MANUAL 標籤、HEX 對齊及手動指令表單排版。請參考 [beta.7 發布說明](docs/v1.6.5-beta.7-release-notes.md)。
-
-測試版 **v1.6.5-beta.6** 加入管理員專用的 RTU HEX 手動指令。請參考 [beta.6 操作與限制](docs/v1.6.5-beta.6-release-notes.md)。
-
-測試版 **v1.6.5-beta.5** 將被動 RX 整合到 Monitor 原始封包時間軸，可用 Slave 或「未配對 RX」篩選，並點選查看 HEX、功能碼與 CRC。請參考 [beta.5 發布說明](docs/v1.6.5-beta.5-release-notes.md)。
-
-測試版 **v1.6.5-beta.3** 新增掃描結果的「全部新增」與待辨識設備的批次型號確認。請參考 [beta.3 發布說明](docs/v1.6.5-beta.3-release-notes.md)。
-
-HACS 會依 GitHub Release 提供可更新版本。**v1.6.4** 是目前穩定版，可透過一般 HACS 更新檢查取得，無需啟用預發布版本更新。更新前請閱讀 [v1.6.4 Release Notes](docs/v1.6.4-release-notes.md)；Config Entry schema 維持 2.1，不需只為更新版本而刪除並重建整合。
+HACS 可透過一般更新取得穩定版 **v1.6.5**。安裝後請重新啟動 Home Assistant 並重新整理 Monitor 頁面。Config Entry schema 維持 2.1，既有設定可直接沿用。請參考 [v1.6.5 發布說明](docs/v1.6.5-release-notes.md)與 [CHANGELOG](CHANGELOG.md)。
 
 ## 開發與驗收文件
 
 - [開發與維護指南](docs/development.md)
+- [v1.6.5 Release Notes](docs/v1.6.5-release-notes.md)
 - [v1.6.4 Release Notes](docs/v1.6.4-release-notes.md)
 - [v1.6.5-beta.2 Release Notes](docs/v1.6.5-beta.2-release-notes.md)
 - [v1.6.5-beta.1 Release Notes](docs/v1.6.5-beta.1-release-notes.md)
